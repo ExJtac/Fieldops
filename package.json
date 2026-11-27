@@ -1,6 +1,6 @@
 {
   "name": "cas-fieldops",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Open-source construction material and manpower tracking",
   "type": "module",
   "license": "MIT",
@@ -13,7 +13,8 @@
     "build": "tsc --noEmit && vite build",
     "test": "tsx --test tests/*.test.ts",
     "check": "tsc --noEmit",
-    "backup": "tsx server/backup.ts"
+    "backup": "tsx server/backup.ts",
+    "test:e2e": "tsx --test tests/e2e.test.ts tests/http.test.ts"
   },
   "dependencies": {
     "@fontsource/dm-sans": "^5.3.0",

@@ -56,7 +56,8 @@ export function MaterialWorkspace({
           .includes(filters.search.toLowerCase())) &&
       (!filters.section || r.section === filters.section) &&
       (!filters.supplier ||
-        r.orders.some((o: R) => o.supplierId === filters.supplier)) &&
+        r.orders.some((o: R) => o.supplierId === filters.supplier) ||
+        r.quotes.some((q: R) => q.supplierId === filters.supplier)) &&
       (!filters.po || r.orders.some((o: R) => o.poId === filters.po)) &&
       (!filters.status || r.taskStatus === filters.status) &&
       (!filters.risk || r.risk === filters.risk) &&

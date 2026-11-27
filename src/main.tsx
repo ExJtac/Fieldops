@@ -151,6 +151,29 @@ function App() {
     [menu, setMenu] = useState(false),
     [users, setUsers] = useState<Row[]>([]),
     [reportSection, setReportSection] = useState("");
+  const [boardCapacity, setBoardCapacity] = useState<Row[]>([]);
+  useEffect(() => {
+    let current = true;
+    setBoardCapacity([]);
+    if (view === "assignments" && ws)
+      api(
+        "/api/v1/resources/availability?" +
+          new URLSearchParams({
+            projectId: project,
+            from: week,
+            to: addDays(week, 6),
+          }),
+      )
+        .then((result) => {
+          if (current) setBoardCapacity(result);
+        })
+        .catch((e) => {
+          if (current) setError(e.message);
+        });
+    return () => {
+      current = false;
+    };
+  }, [view, project, week, ws]);
   const refresh = async () => {
     try {
       const w = await api("/api/v1/workspace");
@@ -1413,7 +1436,17 @@ function App() {
                     <div className="board-person">
                       <strong>{w.name}</strong>
                       <small>
-                        {w.crew || w.trade} · {w.dailyHours}h/day
+                        {[
+                          ...new Set(
+                            boardCapacity
+                              .filter((r) => r.workerId === w.id)
+                              .map((r) => r.crew)
+                              .filter(Boolean),
+                          ),
+                        ].join(" / ") ||
+                          w.crew ||
+                          w.trade}{" "}
+                        · {w.dailyHours}h/day
                       </small>
                     </div>
                     {Array.from({ length: 7 }, (_, i) => {
@@ -1428,38 +1461,12 @@ function App() {
                           (a) => !project || a.projectId === project,
                         ),
                         hours = all.reduce((s, a) => s + a.hours, 0);
-                      const calendar = rows("calendar").find(
-                          (c) => c.workerId === w.id,
-                        ),
-                        p = lookup(
-                          "project",
-                          project ||
-                            items[0]?.projectId ||
-                            rows("project")[0]?.id,
-                        ),
-                        weekday = new Date(date + "T00:00:00Z").getUTCDay();
-                      const available =
-                        !w.active ||
-                        !(p?.workdays || [1, 2, 3, 4, 5]).includes(weekday) ||
-                        (calendar && !calendar.workdays.includes(weekday)) ||
-                        [
-                          ...(p?.holidays || []),
-                          ...(p?.closures || []),
-                          ...(calendar?.holidays || []),
-                        ].includes(date)
-                          ? 0
-                          : Math.max(
-                              0,
-                              (calendar
-                                ? calendar.shiftHours - calendar.unpaidBreak
-                                : w.dailyHours) -
-                                rows("leave")
-                                  .filter(
-                                    (l) =>
-                                      l.workerId === w.id && l.date === date,
-                                  )
-                                  .reduce((n, l) => n + l.hours, 0),
-                            );
+                      const capacityRow = boardCapacity.find(
+                        (r) => r.workerId === w.id && r.date === date,
+                      );
+                      const available = capacityRow?.capacity;
+                      const plannedAllJobs =
+                        capacityRow?.plannedAllJobs ?? hours;
                       return (
                         <div
                           key={i}
@@ -1518,10 +1525,14 @@ function App() {
                           ))}
                           <small
                             className={
-                              hours > available ? "danger-text" : "capacity"
+                              available != null && plannedAllJobs > available
+                                ? "danger-text"
+                                : "capacity"
                             }
                           >
-                            {`${number(hours)}h / ${number(available)}h available`}
+                            {available == null
+                              ? "Checking capacity…"
+                              : `${number(plannedAllJobs)}h planned / ${number(available)}h capacity`}
                           </small>
                           {rows("leave")
                             .filter(
@@ -2132,7 +2143,7 @@ function App() {
               CAS FieldOps <b>·</b> Open source. On your terms.
             </span>
             <span>
-              v0.3.0 ·{" "}
+              v0.3.1 ·{" "}
               {actor.role === "admin" ? "Workspace administrator" : actor.role}
             </span>
           </footer>
@@ -2765,6 +2776,7 @@ function RecordForm({
                 <option key={o.id} value={o.id}>
                   {o.name ||
                     o.number ||
+                    o.reference ||
                     o.code ||
                     (o.partNumber
                       ? o.partNumber + " · " + o.description
@@ -3198,6 +3210,7 @@ function ImportForm({
                       "source",
                       "needBy",
                       "conversionId",
+                      "changeId",
                     ].map((k) => [k, k]),
                   ),
                 );
@@ -3225,6 +3238,7 @@ function ImportForm({
               "source",
               "needBy",
               "conversionId",
+              "changeId",
             ].map((k) => (
               <label key={k}>
                 {k}

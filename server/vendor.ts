@@ -108,7 +108,19 @@ export function vendorWorkspace(s: Store, a: Actor, scope: Set<string>) {
   data.po = data.po.map((p: any) => ({
     ...p,
     lines: p.lines.map((l: any) => ({
-      ...l,
+      ...Object.fromEntries(
+        [
+          "id",
+          "partId",
+          "quantity",
+          "unitCost",
+          "confirmedETA",
+          "leadMin",
+          "leadMax",
+          "ackDate",
+          "backordered",
+        ].map((k) => [k, l[k]]),
+      ),
       netReceived: s
         .list(a.org, "movement")
         .filter((m) => m.poId === p.id && m.lineId === l.id)
@@ -137,4 +149,26 @@ export function vendorRouteAllowed(method: string, path: string) {
       ].includes(path) || /^\/records\/shipment\/[^/]+\/transition$/.test(path)
     );
   return false;
+}
+
+export function vendorReply(s: Store, a: Actor, path: string, result: any) {
+  if (a.role !== "vendor") return result;
+  const kind = path.endsWith("/vendorPromise")
+    ? "po"
+    : path.match(/\/records\/(quote|shipment)(?:\/|$)/)?.[1];
+  if (!kind) return result;
+  const scope = new Set(
+    (
+      s.db
+        .prepare(
+          "SELECT project_id FROM project_access WHERE org=? AND user_id=?",
+        )
+        .all(a.org, a.id) as any[]
+    ).map((r) => r.project_id as string),
+  );
+  const record = vendorWorkspace(s, a, scope).data[kind].find(
+    (r: R) => r.id === result.id,
+  );
+  requireThat(record, "Supplier record no longer shared", 403);
+  return record;
 }

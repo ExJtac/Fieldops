@@ -212,6 +212,11 @@ export class Operations {
   }
   validateRefs(a: Actor, b: any) {
     if (b.projectId) this.ref(a, "project", b.projectId);
+    if (b.changeId)
+      requireThat(
+        this.ref(a, "change", b.changeId).projectId === b.projectId,
+        "Change belongs to another project",
+      );
     if (b.taskId) {
       const t = this.ref(a, "task", b.taskId);
       requireThat(
@@ -514,12 +519,23 @@ export class Operations {
         ["Draft", "Rejected"].includes(old.status),
         "Request a correction before editing approved time",
       );
-      if (a.role === "worker")
+      if (a.role === "worker") {
         requireThat(
           a.workerId === old.workerId && a.workerId === b.workerId,
           "You can only edit your own time",
           403,
         );
+        requireThat(
+          this.all(a, "assignment").some(
+            (x) =>
+              x.workerId === a.workerId &&
+              x.projectId === b.projectId &&
+              x.status !== "Cancelled",
+          ),
+          "You are not assigned to this project",
+          403,
+        );
+      }
       validateExtra(this, a, kind, b);
       this.timeConflicts(a, b, id);
       b.status = "Draft";
@@ -558,7 +574,17 @@ export class Operations {
       a,
       kind,
       id,
-      b,
+      {
+        ...b,
+        contentEditedBy: a.id,
+        contentEditors: [
+          ...new Set([
+            ...(old.contentEditors || []),
+            ...(old.contentEditedBy ? [old.contentEditedBy] : []),
+            a.id,
+          ]),
+        ],
+      },
       z.number().int().positive().parse(raw.version),
     );
   }
@@ -652,6 +678,7 @@ export class Operations {
         "A project manager must approve this proposal",
         403,
       );
+      if (status === "Approved") this.separation(a, r);
       allowed =
         r.status === "Proposed"
           ? ["Approved", "Rejected"]
@@ -695,7 +722,10 @@ export class Operations {
     const settings = this.all(a, "settings")[0];
     if (settings?.separation)
       requireThat(
-        r.createdBy !== a.id && !(r.workerId && r.workerId === a.workerId),
+        r.createdBy !== a.id &&
+          r.contentEditedBy !== a.id &&
+          !(r.contentEditors || []).includes(a.id) &&
+          !(r.workerId && r.workerId === a.workerId),
         "A different authorized person must approve this action",
         403,
       );
@@ -1003,6 +1033,25 @@ export class Operations {
       );
     }
     const record = this.store.add(a, "movement", { ...b, ...delta, assetId });
+    if (b.poId && delta.received > 0) {
+      const po = this.ref(a, "po", b.poId),
+        line = po.lines.find((l: R) => l.id === b.lineId),
+        remaining = line.quantity - this.receiptTotal(a, po.id, line.id);
+      if ((line.backordered || 0) > remaining)
+        this.store.update(
+          a,
+          "po",
+          po.id,
+          {
+            lines: po.lines.map((l: R) =>
+              l.id === line.id
+                ? { ...l, backordered: Math.max(0, remaining) }
+                : l,
+            ),
+          },
+          po.version,
+        );
+    }
     if (b.action === "transfer")
       this.store.add(a, "movement", {
         ...b,
@@ -1158,7 +1207,11 @@ export class Operations {
     this.allowed(a, "assignment");
     const old = this.ref(a, "assignment", id);
     requireThat(old.status !== "Cancelled", "Cancelled assignment cannot move");
-    const b = schemas.assignment.parse({ ...old, ...raw });
+    const b = schemas.assignment.parse({
+      ...old,
+      ...raw,
+      override: raw.override ?? "",
+    });
     const conflicts = this.assignmentConflicts(a, b, id);
     requireThat(
       !conflicts.length || b.override.trim().length >= 10,

@@ -822,3 +822,15 @@ forms["op:adapter"] = {
     }),
   ],
 };
+
+// Build bulk forms after all field extensions so codes, roles and planned quantities are retained.
+for (const [bulk, single] of [
+  ["crewTime", "time"],
+  ["crewAssignment", "assignment"],
+]) {
+  forms[bulk].fields = [
+    ...forms[single].fields.filter((f) => f.key !== "workerId"),
+    ref("crewId", "Dated crew", "crew", false),
+    f("crew", "Legacy crew name (if no dated crew)"),
+  ];
+}

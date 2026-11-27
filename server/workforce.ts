@@ -211,3 +211,56 @@ export function workforceData(
     CrewCapacity: crewCapacity,
   };
 }
+
+// The board and assignment validator use the same dated calendars and private leave balances.
+export function resourceAvailability(
+  o: Operations,
+  a: Actor,
+  scope: { project?: string; from: string; to: string },
+) {
+  requireThat(
+    !["vendor", "viewer"].includes(a.role),
+    "Resource access required",
+    403,
+  );
+  const from = date.parse(scope.from),
+    to = date.parse(scope.to);
+  requireThat(
+    to >= from && to <= addDays(from, 31),
+    "Use a resource range of up to 32 days",
+  );
+  const projects = o.all(a, "project");
+  if (scope.project) o.ref(a, "project", scope.project);
+  const assignments = o.all(a, "assignment");
+  const result: R[] = [];
+  for (const worker of o.all(a, "worker"))
+    for (let day = from; day <= to; day = addDays(day, 1)) {
+      const here = assignments.filter(
+        (x) =>
+          x.workerId === worker.id &&
+          x.date === day &&
+          x.status !== "Cancelled" &&
+          (!scope.project || x.projectId === scope.project),
+      );
+      const project =
+        projects.find((p) => p.id === (scope.project || here[0]?.projectId)) ||
+        projects[0];
+      const plannedAllJobs = o.store
+        .list(a.org, "assignment")
+        .filter(
+          (x) =>
+            x.workerId === worker.id &&
+            x.date === day &&
+            x.status !== "Cancelled",
+        )
+        .reduce((n, x) => n + x.hours, 0);
+      result.push({
+        workerId: worker.id,
+        date: day,
+        crew: crewName(o.store, a, worker.id, day),
+        capacity: project ? o.workerCapacity(a, project, worker, day) : 0,
+        plannedAllJobs,
+      });
+    }
+  return result;
+}

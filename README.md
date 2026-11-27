@@ -17,6 +17,7 @@ Open http://127.0.0.1:4328. Create your organization and administrator account. 
 
 ```sh
 npm test
+npm run test:e2e # authenticated workflow acceptance
 npm run build
 NODE_ENV=production npm start
 ```
@@ -39,7 +40,7 @@ Or run `docker compose up --build -d`; the port is bound to localhost. The named
 
 ## Standalone scope
 
-Version **0.3** implements the standalone workflows in the tracking brief. See [acceptance and operational limits](docs/ACCEPTANCE.md) and [release evidence](docs/RELEASE.md).
+Version **0.3.1** implements the standalone workflows in the tracking brief. See [original-document acceptance](docs/END-TO-END-ACCEPTANCE.md), [acceptance and operational limits](docs/ACCEPTANCE.md) and [release evidence](docs/RELEASE.md).
 
 This edition is an MIT-licensed, single-server application with multiple isolated organization workspaces. Community mode includes both modules without subscription or application-enforced usage limits. Workspace membership, project grants and separate financial permissions remain enforced. Native Gantt uses the same project/task records as Operations. Approved supplier accounts see only shared procurement records. Encrypted offline field drafts support explicit conflict review and retry-safe sync.
 

@@ -1,3 +1,4 @@
+import { effectiveCrew, crewName } from "./crews.js";
 import express from "express";
 import {
   receiveBilling,
@@ -13,7 +14,7 @@ import {
   guardEntitlement,
   owns,
 } from "./tenants.js";
-import { vendorRouteAllowed } from "./vendor.js";
+import { vendorRouteAllowed, vendorReply } from "./vendor.js";
 import { advancedRoutes } from "./advanced-routes.js";
 import { Advanced } from "./advanced.js";
 import helmet from "helmet";
@@ -31,7 +32,7 @@ import {
   type Actor,
 } from "./store.js";
 import { Operations } from "./domain.js";
-import { schemas, roles, optionalDate, type Kind } from "./schemas.js";
+import { schemas, roles, optionalDate, date, type Kind } from "./schemas.js";
 import { seed } from "./seed.js";
 import { previewImport, commitImport, decodeWorkbook } from "./imports.js";
 export function createApp(store: Store) {
@@ -58,14 +59,16 @@ export function createApp(store: Store) {
   app.post(
     "/api/billing/webhook",
     express.raw({ type: "application/json", limit: "1mb" }),
-    async (q, r) =>
+    async (q, r) => {
+      requireThat(!readOnly, "Public demonstration is read-only", 403);
       r.json(
         await receiveBilling(
           store,
           q.body,
           String(q.get("Stripe-Signature") || ""),
         ),
-      ),
+      );
+    },
   );
   app.use(express.json({ limit: "16mb" }));
   app.use("/api", (_q, r, next) => {
@@ -84,7 +87,7 @@ export function createApp(store: Store) {
     }
     next();
   });
-  app.get("/api/health", (_q, r) => r.json({ ok: true, version: "0.3.0" }));
+  app.get("/api/health", (_q, r) => r.json({ ok: true, version: "0.3.1" }));
   app.use("/api", (q, _r, next) => {
     if (readOnly && !["GET", "HEAD"].includes(q.method))
       return next(
@@ -252,11 +255,16 @@ export function createApp(store: Store) {
   });
   const write = (req: express.Request, res: express.Response, fn: () => any) =>
     res.json(
-      ops.write(
+      vendorReply(
+        store,
         res.locals.actor,
-        String(req.get("Idempotency-Key") || ""),
-        { method: req.method, path: req.path, body: req.body },
-        fn,
+        req.path,
+        ops.write(
+          res.locals.actor,
+          String(req.get("Idempotency-Key") || ""),
+          { method: req.method, path: req.path, body: req.body },
+          fn,
+        ),
       ),
     );
   app.get("/api/v1/billing", (_q, r) =>
@@ -357,6 +365,7 @@ export function createApp(store: Store) {
         "adjustment",
         "scheduleRevision",
         "productionCorrection",
+        "availability",
       ].includes(q.params.kind)
         ? new Advanced(ops).transition(
             r.locals.actor,
@@ -668,10 +677,14 @@ export function createApp(store: Store) {
         "Transfer workspace ownership before deactivating its owner",
       );
       const target = store.db
-        .prepare("SELECT user_id FROM memberships WHERE user_id=? AND org=?")
-        .get(q.params.id, a.org);
+        .prepare(
+          "SELECT user_id,active FROM memberships WHERE user_id=? AND org=?",
+        )
+        .get(q.params.id, a.org) as
+        { user_id: string; active: number } | undefined;
       requireThat(target, "Account not found", 404);
       const active = z.boolean().parse(q.body.active);
+      if (active && !target!.active) guardEntitlement(store, a, "member");
       store.db
         .prepare("UPDATE memberships SET active=? WHERE user_id=? AND org=?")
         .run(active ? 1 : 0, q.params.id, a.org);
@@ -703,10 +716,26 @@ export function createApp(store: Store) {
         403,
       );
       ops.allowed(a, kind);
-      const crew = z.string().trim().min(1).parse(q.body.crew);
+      const day = date.parse(q.body.date),
+        crewId = z.string().parse(q.body.crewId || ""),
+        crew = z
+          .string()
+          .trim()
+          .parse(q.body.crew || "");
+      requireThat(
+        crewId || crew,
+        "Select a dated crew or enter a legacy crew name",
+      );
+      if (crewId) ops.ref(a, "crew", crewId);
       const workers = ops
         .all(a, "worker")
-        .filter((w) => w.crew === crew && w.active);
+        .filter(
+          (w) =>
+            w.active &&
+            (crewId
+              ? effectiveCrew(store, a, w.id, day)?.crew.id === crewId
+              : crewName(store, a, w.id, day) === crew),
+        );
       requireThat(
         workers.length > 0 && workers.length <= 100,
         "Select a crew with 1–100 active workers",

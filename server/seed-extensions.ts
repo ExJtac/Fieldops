@@ -2,12 +2,37 @@ import { Operations } from "./domain.js";
 import { type Actor, requireThat } from "./store.js";
 // Additive synthetic examples only. Never called automatically for a writable installation.
 export function seedExtensions(o: Operations, a: Actor) {
-  if (o.store.list(a.org, "demoExpansion").length) return;
   const p = o.all(a, "project").find((p) => p.name === "EPCC · Valle Verde"),
     other = o
       .all(a, "project")
       .find((p) => p.name === "Westside · Service work");
   requireThat(p && other, "Synthetic base fixture is required");
+  if (!o.store.list(a.org, "demoSpecification031").length) {
+    if (!o.all(a, "part").some((r) => r.partNumber === "DEMO-RACK-2POST"))
+      o.create(a, "part", {
+        partNumber: "DEMO-RACK-2POST",
+        manufacturer: "Demo catalog",
+        description:
+          "Two-post rack — quantity not supplied; catalog only until reviewed",
+        unit: "ea",
+      });
+    o.store.update(
+      a,
+      "project",
+      p.id,
+      {
+        notes:
+          p.notes +
+          " Source scope: two-post racks are included but their quantity is unconfirmed; no rack BOM quantity is invented. Second-floor fiber/analog is excluded from the current approved phase. Vertical managers are expected mid-December; 24 × 4-inch tray is claimed for mid/late December but remains unconfirmed. The quoted 12-inch tray conflicts with the requested width and requires reconciliation.",
+      },
+      p.version,
+    );
+    o.store.add(a, "demoSpecification031", {
+      source: "Tracking specification section 9",
+      synthetic: true,
+    });
+  }
+  if (o.store.list(a.org, "demoExpansion").length) return;
   for (const w of o.all(a, "worker"))
     if (!o.all(a, "calendar").some((c) => c.workerId === w.id))
       o.create(a, "calendar", {

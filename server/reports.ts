@@ -326,7 +326,7 @@ export function reportData(o: Operations, a: Actor, q: any) {
       .filter(
         (p) =>
           (!project || p.projectId === project) &&
-          ["Issued", "Acknowledged"].includes(p.status),
+          ["Issued", "Acknowledged", "Cancelled"].includes(p.status),
       )
       .flatMap((p) =>
         p.lines
@@ -341,14 +341,21 @@ export function reportData(o: Operations, a: Actor, q: any) {
               category: part.csi || part.trade || "Unclassified",
               part: part.partNumber,
               currency: p.currency,
-              committedMaterial: l.quantity * l.unitCost,
+              status: p.status,
+              committedMaterial:
+                p.status === "Cancelled"
+                  ? receiptValuation(o, a, p, l.id).value
+                  : l.quantity * l.unitCost,
               receivedMaterialValue: receiptValuation(o, a, p, l.id).value,
               receivedValueInPeriod: [
                 ...receiptValuation(o, a, p, l.id).entries,
               ]
                 .filter(([id]) => movements.some((m) => m.id === id))
                 .reduce((n, [, v]) => n + v, 0),
-              openMaterialCommitment: (l.quantity - received) * l.unitCost,
+              openMaterialCommitment:
+                p.status === "Cancelled"
+                  ? 0
+                  : (l.quantity - received) * l.unitCost,
             };
           }),
       );

@@ -199,6 +199,7 @@ test("public demo rejects every mutation and never requires a shared password", 
     assert.equal(state.readOnly, true);
     for (const path of [
       "/api/setup",
+      "/api/billing/webhook",
       "/api/login",
       "/api/v1/users",
       "/api/v1/records/project",

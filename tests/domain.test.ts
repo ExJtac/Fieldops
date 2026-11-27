@@ -6,6 +6,7 @@ import { Operations, capacity } from "../server/domain.js";
 import { previewImport, commitImport } from "../server/imports.js";
 import { Advanced } from "../server/advanced.js";
 import { seed } from "../server/seed.js";
+import { seedExtensions } from "../server/seed-extensions.js";
 function fixture() {
   const store = new Store(":memory:");
   store.db.prepare("INSERT INTO organizations VALUES(?,?)").run("org", "Test");
@@ -557,6 +558,34 @@ test("demo fixture uses four synthetic people and no allocated section budget", 
     32,
   );
   assert.equal(o.all(a, "time")[0].status, "Submitted");
+  const project = o.all(a, "project")[0],
+    tasks = o.all(a, "task").filter((t) => t.projectId === project.id);
+  assert.equal(project.pmBudget, 179.395);
+  assert.equal(tasks.find((t) => t.id === "conduit")!.target, 33);
+  assert.equal(tasks.find((t) => t.id === "cable")!.target, 33);
+  assert.equal(tasks.filter((t) => t.released === false).length, 4);
+  assert.ok(tasks.every((t) => t.allocatedHours == null));
+  const po = o.all(a, "po").find((p) => p.number === "DEMO-001")!;
+  assert.deepEqual(
+    po.lines.map((l: any) => [l.leadMin, l.leadMax]),
+    [
+      [5, 10],
+      [20, 20],
+      [30, 35],
+      [95, 95],
+    ],
+  );
+  assert.ok(po.lines.every((l: any) => !l.ackDate && !l.confirmedETA));
+  assert.match(project.notes, /Second-floor fiber\/analog is excluded/);
+  assert.match(project.notes, /quoted 12-inch tray conflicts/);
+  const rack = o
+    .all(a, "part")
+    .find((p) => p.partNumber === "DEMO-RACK-2POST")!;
+  assert.ok(rack);
+  assert.ok(!o.all(a, "requirement").some((r) => r.partId === rack.id));
+  const count = o.all(a, "part").length;
+  seedExtensions(o, a);
+  assert.equal(o.all(a, "part").length, count);
 });
 
 test("return reversal cannot overreceive after a replacement delivery", () => {

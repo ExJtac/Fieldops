@@ -124,7 +124,22 @@ export class Advanced {
           a,
           "po",
           po.id,
-          { lines: r.lines, freight: r.freight, tax: r.tax, amendmentId: r.id },
+          {
+            lines: r.lines.map((l: R) => {
+              const old = po.lines.find((x: R) => x.id === l.id);
+              return {
+                ...l,
+                backordered: Math.min(
+                  old?.backordered || 0,
+                  Math.max(0, l.quantity - o.receiptTotal(a, po.id, l.id)),
+                ),
+                backorderReason: old?.backorderReason || "",
+              };
+            }),
+            freight: r.freight,
+            tax: r.tax,
+            amendmentId: r.id,
+          },
           po.version,
         );
       }

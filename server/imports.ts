@@ -1,4 +1,5 @@
 import ExcelJS from "exceljs";
+import { date } from "./schemas.js";
 import { Operations } from "./domain.js";
 import { type Actor, requireThat, hash } from "./store.js";
 export type ImportRow = {
@@ -11,6 +12,7 @@ export type ImportRow = {
   source: string;
   needBy: string;
   conversionId: string;
+  changeId: string;
 };
 export function previewImport(
   ops: Operations,
@@ -36,8 +38,11 @@ export function previewImport(
       source: String(raw.source ?? "").slice(0, 3000),
       needBy: String(raw.needBy || ""),
       conversionId: String(raw.conversionId || ""),
+      changeId: String(raw.changeId || ""),
     };
     const errors: string[] = [];
+    if (row.needBy && !date.safeParse(row.needBy).success)
+      errors.push("Need-by must be a real calendar date (YYYY-MM-DD)");
     if (!row.partNumber) errors.push("Missing part number");
     if (!Number.isFinite(row.quantity) || row.quantity <= 0)
       errors.push("Quantity must be positive");
@@ -77,6 +82,13 @@ export function previewImport(
       .all(a, "task")
       .find((t) => t.id === row.taskId && t.projectId === projectId);
     if (!task) errors.push("Task not found in this project");
+    if (
+      row.changeId &&
+      !ops
+        .all(a, "change")
+        .some((c) => c.id === row.changeId && c.projectId === projectId)
+    )
+      errors.push("Change not found in this project");
     const key = (part?.id || row.partNumber) + "|" + row.taskId;
     if (seen.has(key)) errors.push("Duplicate part / task (including aliases)");
     seen.add(key);
@@ -131,6 +143,12 @@ export function commitImport(ops: Operations, a: Actor, raw: any) {
       quantity: p.normalizedQuantity,
       source: p.row.source || raw.source || "Imported BOM",
       sourceVersion: raw.sourceVersion,
+      changeId:
+        p.row.changeId ||
+        (p.existingId
+          ? ops.ref(a, "requirement", p.existingId).changeId
+          : "") ||
+        "",
       needBy:
         p.row.needBy ||
         (p.existingId ? ops.ref(a, "requirement", p.existingId).needBy : "") ||
@@ -172,12 +190,31 @@ export async function decodeWorkbook(base64: string, format: string) {
     sheet && sheet.rowCount <= 5001,
     "Workbook requires a first sheet with at most 5000 data rows",
   );
-  const headers = (sheet.getRow(1).values as any[]).slice(1).map(String);
+  const cellValue = (v: any): string | number | boolean => {
+    if (v instanceof Date) return v.toISOString().slice(0, 10);
+    if (v && typeof v === "object") {
+      if ("formula" in v || "sharedFormula" in v) return cellValue(v.result);
+      if (Array.isArray(v.richText))
+        return v.richText.map((x: any) => x.text).join("");
+      if (typeof v.text === "string") return v.text;
+      return "";
+    }
+    return v ?? "";
+  };
+  const headers = Array.from({ length: sheet.columnCount }, (_, i) =>
+    String(cellValue(sheet.getRow(1).getCell(i + 1).value)).trim(),
+  );
+  requireThat(
+    headers.length > 0 &&
+      headers.every(Boolean) &&
+      new Set(headers).size === headers.length,
+    "Column headers must be nonempty and unique",
+  );
   return Array.from({ length: sheet.rowCount - 1 }, (_, i) =>
     Object.fromEntries(
       headers.map((h, j) => {
         const v = sheet.getRow(i + 2).getCell(j + 1).value;
-        return [h, typeof v === "object" && v !== null ? "" : (v ?? "")];
+        return [h, cellValue(v)];
       }),
     ),
   );

@@ -62,6 +62,7 @@ export function Intake({
           "taskId",
           "needBy",
           "conversionId",
+          "changeId",
         ];
   const set = (k: string, v: any) => {
     setInput({ ...input, [k]: v });

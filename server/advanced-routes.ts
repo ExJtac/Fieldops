@@ -1,3 +1,4 @@
+import { vendorReply } from "./vendor.js";
 import {
   externalPoPreview,
   externalPoCommit,
@@ -16,7 +17,7 @@ import { type Actor, requireThat, hash } from "./store.js";
 import { payrollAccess } from "./access.js";
 import { reportData, renderReport } from "./reports.js";
 import { financialView, commercialAccess } from "./financial.js";
-import { workforceData } from "./workforce.js";
+import { workforceData, resourceAvailability } from "./workforce.js";
 import {
   materialWorkspace,
   materialTimeline,
@@ -28,11 +29,16 @@ export function advancedRoutes(app: Express, o: Operations) {
     s = o.store;
   const write = (q: any, r: any, fn: () => any) =>
     r.json(
-      o.write(
+      vendorReply(
+        s,
         r.locals.actor,
-        String(q.get("Idempotency-Key") || ""),
-        { method: q.method, path: q.path, body: q.body },
-        fn,
+        q.path,
+        o.write(
+          r.locals.actor,
+          String(q.get("Idempotency-Key") || ""),
+          { method: q.method, path: q.path, body: q.body },
+          fn,
+        ),
       ),
     );
   app.post("/api/v1/intake/decode", async (q, r) => {
@@ -67,6 +73,15 @@ export function advancedRoutes(app: Express, o: Operations) {
         : q.params.mode === "estimate"
           ? estimateCommit(o, r.locals.actor, q.body)
           : requireThat(false, "Unknown intake", 404),
+    ),
+  );
+  app.get("/api/v1/resources/availability", (q, r) =>
+    r.json(
+      resourceAvailability(o, r.locals.actor, {
+        project: String(q.query.projectId || ""),
+        from: String(q.query.from || ""),
+        to: String(q.query.to || ""),
+      }),
     ),
   );
   app.get("/api/v1/workforce", (q, r) =>
