@@ -2143,7 +2143,7 @@ function App() {
               CAS FieldOps <b>·</b> Open source. On your terms.
             </span>
             <span>
-              v0.3.1 ·{" "}
+              v0.3.2 ·{" "}
               {actor.role === "admin" ? "Workspace administrator" : actor.role}
             </span>
           </footer>

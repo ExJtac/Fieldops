@@ -1,3 +1,4 @@
+import { materialCoverage } from "./material-coverage.js";
 import { guardEntitlement } from "./tenants.js";
 import { vendorWorkspace } from "./vendor.js";
 import { effectiveCrew, effectiveCalendar, crewName } from "./crews.js";
@@ -380,16 +381,11 @@ export class Operations {
         !this.all(a, "substitution").some(
           (s) =>
             s.taskId === b.taskId &&
+            s.originalPartId === b.originalPartId &&
             s.replacementPartId === b.replacementPartId &&
             s.status !== "Rejected",
         ),
-        "This replacement already supports a requirement on the task",
-      );
-      requireThat(
-        !this.all(a, "requirement").some(
-          (r) => r.taskId === b.taskId && r.partId === b.replacementPartId,
-        ),
-        "A part with its own task requirement cannot also cover another requirement",
+        "This substitute is already proposed or approved for this requirement",
       );
       const p = this.ref(a, "part", b.originalPartId),
         r = this.ref(a, "part", b.replacementPartId);
@@ -1250,66 +1246,70 @@ export class Operations {
     );
     const requirements = this.all(a, "requirement");
     return tasks.map((t) => {
-      const lines = requirements
-        .filter((r) => r.taskId === t.id)
-        .map((r) => {
-          const part = this.ref(a, "part", r.partId);
-          const substitutes = this.all(a, "substitution")
-            .filter(
-              (s) =>
-                s.taskId === t.id &&
-                s.originalPartId === r.partId &&
-                s.status === "Approved",
-            )
-            .map((s) => s.replacementPartId);
-          const coverage = [r.partId, ...new Set(substitutes)].reduce(
-            (sum, partId) => {
-              const b = this.balance(a, partId, undefined, t.id);
-              return sum + b.reserved + b.issued + b.installed;
-            },
-            0,
-          );
-          const shortage = Math.max(0, r.quantity - coverage);
-          const orders = this.all(a, "po")
-            .filter(
-              (p) =>
-                p.projectId === r.projectId &&
-                ["Issued", "Acknowledged"].includes(p.status),
-            )
-            .flatMap((p) =>
-              p.lines
-                .filter((l: any) => l.partId === r.partId)
-                .map((l: any) => ({
-                  ...l,
-                  remaining: l.quantity - this.receiptTotal(a, p.id, l.id),
-                })),
-            )
-            .filter((l: any) => l.remaining > 0);
-          const late = orders.some(
-            (l: any) =>
-              l.confirmedETA &&
-              r.needBy &&
-              addDays(
-                l.confirmedETA,
-                this.ref(a, "project", r.projectId).stagingDays ?? 2,
-              ) > r.needBy,
-          );
-          return {
-            ...r,
-            partNumber: part.partNumber,
-            description: part.description,
-            coverage,
-            shortage,
-            available: this.balance(a, r.partId).available,
-            risk: shortage
-              ? late
-                ? "Late delivery"
-                : orders.some((l: any) => l.confirmedETA)
-                  ? "Awaiting delivery"
-                  : "ETA unconfirmed"
-              : "Ready",
-          };
-        });
+      const taskNeeds = requirements.filter((r) => r.taskId === t.id);
+      const substitutes = this.all(a, "substitution").filter(
+        (s) => s.taskId === t.id && s.status === "Approved",
+      );
+      const partIds = new Set([
+        ...taskNeeds.map((r) => r.partId),
+        ...substitutes.map((s) => s.replacementPartId),
+      ]);
+      const stock = new Map<string, number>(
+        [...partIds].map((partId) => {
+          const b = this.balance(a, partId, undefined, t.id);
+          return [partId, b.reserved + b.issued + b.installed];
+        }),
+      );
+      const coverageByRequirement = materialCoverage(
+        taskNeeds as any,
+        substitutes as any,
+        stock,
+      );
+      const lines = taskNeeds.map((r) => {
+        const part = this.ref(a, "part", r.partId);
+        const { coverage, sources } = coverageByRequirement.get(r.id)!;
+        const shortage = Math.max(0, r.quantity - coverage);
+        const orders = this.all(a, "po")
+          .filter(
+            (p) =>
+              p.projectId === r.projectId &&
+              ["Issued", "Acknowledged"].includes(p.status),
+          )
+          .flatMap((p) =>
+            p.lines
+              .filter((l: any) => l.partId === r.partId)
+              .map((l: any) => ({
+                ...l,
+                remaining: l.quantity - this.receiptTotal(a, p.id, l.id),
+              })),
+          )
+          .filter((l: any) => l.remaining > 0);
+        const late = orders.some(
+          (l: any) =>
+            l.confirmedETA &&
+            r.needBy &&
+            addDays(
+              l.confirmedETA,
+              this.ref(a, "project", r.projectId).stagingDays ?? 2,
+            ) > r.needBy,
+        );
+        return {
+          ...r,
+          partNumber: part.partNumber,
+          description: part.description,
+          coverage,
+          coverageSources: sources,
+          shortage,
+          available: this.balance(a, r.partId).available,
+          risk: shortage
+            ? late
+              ? "Late delivery"
+              : orders.some((l: any) => l.confirmedETA)
+                ? "Awaiting delivery"
+                : "ETA unconfirmed"
+            : "Ready",
+        };
+      });
       const holds = this.all(a, "hold").filter(
         (h) =>
           h.taskId === t.id &&

@@ -227,6 +227,16 @@ export function MaterialWorkspace({
                         }
                       >
                         {n(r[k])}
+                        {k === "coverage" &&
+                          (r.coverageSources || [])
+                            .filter((s: R) => s.partId !== r.partId)
+                            .map((s: R) => (
+                              <small key={s.partId}>
+                                {n(s.quantity)} from{" "}
+                                {ws.data.part.find((p: R) => p.id === s.partId)
+                                  ?.partNumber || "approved substitute"}
+                              </small>
+                            ))}
                       </td>
                     ))}
                     <td>

@@ -87,7 +87,7 @@ export function createApp(store: Store) {
     }
     next();
   });
-  app.get("/api/health", (_q, r) => r.json({ ok: true, version: "0.3.1" }));
+  app.get("/api/health", (_q, r) => r.json({ ok: true, version: "0.3.2" }));
   app.use("/api", (q, _r, next) => {
     if (readOnly && !["GET", "HEAD"].includes(q.method))
       return next(

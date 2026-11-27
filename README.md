@@ -40,7 +40,7 @@ Or run `docker compose up --build -d`; the port is bound to localhost. The named
 
 ## Standalone scope
 
-Version **0.3.1** implements the standalone workflows in the tracking brief. See [original-document acceptance](docs/END-TO-END-ACCEPTANCE.md), [acceptance and operational limits](docs/ACCEPTANCE.md) and [release evidence](docs/RELEASE.md).
+Version **0.3.2** implements the standalone workflows in the tracking brief. See [original-document acceptance](docs/END-TO-END-ACCEPTANCE.md), [acceptance and operational limits](docs/ACCEPTANCE.md) and [release evidence](docs/RELEASE.md).
 
 This edition is an MIT-licensed, single-server application with multiple isolated organization workspaces. Community mode includes both modules without subscription or application-enforced usage limits. Workspace membership, project grants and separate financial permissions remain enforced. Native Gantt uses the same project/task records as Operations. Approved supplier accounts see only shared procurement records. Encrypted offline field drafts support explicit conflict review and retry-safe sync.
 

@@ -1399,3 +1399,138 @@ test("E2E reconciliation: conversions, approved alternate stock, damage, replace
     await h.close();
   }
 });
+
+test("E2E shared substitute stock covers each physical unit once and reroutes scarce equivalents", async () => {
+  const h = await harness(),
+    a = h.admin;
+  try {
+    const p = await a.create("project", { name: "Shared substitute coverage" }),
+      t = await a.create("task", {
+        projectId: p.id,
+        name: "Mixed installation",
+        section: "S1",
+        target: 20,
+      }),
+      loc = await a.create("location", { name: "Site" }),
+      supplier = await a.create("supplier", { name: "Supplier" });
+    const parts: R[] = [];
+    for (const partNumber of ["A", "B", "C"])
+      parts.push(
+        await a.create("part", {
+          partNumber,
+          description: partNumber,
+          unit: "ea",
+        }),
+      );
+    for (const part of parts.slice(0, 1))
+      await a.create("requirement", {
+        projectId: p.id,
+        taskId: t.id,
+        partId: part.id,
+        quantity: 10,
+      });
+    const sub = await a.create("substitution", {
+      projectId: p.id,
+      taskId: t.id,
+      originalPartId: parts[0].id,
+      replacementPartId: parts[1].id,
+      reason: "B accepted for A",
+    });
+    await a.transition("substitution", sub, "Approved");
+    // Later BOM scope can require the very part already approved as a substitute.
+    await a.create("requirement", {
+      projectId: p.id,
+      taskId: t.id,
+      partId: parts[1].id,
+      quantity: 10,
+    });
+    let po = await a.create("po", {
+      projectId: p.id,
+      supplierId: supplier.id,
+      number: "SHARED",
+      lines: parts.map((part) => ({
+        partId: part.id,
+        quantity: 20,
+        unitCost: 1,
+        taskId: t.id,
+      })),
+    });
+    for (const status of ["Submitted", "Approved", "Issued"])
+      po = await a.transition("po", po, status);
+    const allocate = async (index: number, quantity: number) => {
+      const line = po.lines[index];
+      await a.request("/api/v1/inventory/movements", {
+        projectId: p.id,
+        partId: line.partId,
+        locationId: loc.id,
+        poId: po.id,
+        lineId: line.id,
+        quantity,
+        action: "receive",
+        note: "Synthetic physical stock",
+      });
+      return a.request("/api/v1/inventory/movements", {
+        projectId: p.id,
+        partId: line.partId,
+        locationId: loc.id,
+        taskId: t.id,
+        quantity,
+        action: "reserve",
+        note: "Allocate once to task",
+      });
+    };
+    const reserved = await allocate(1, 10);
+    let ready = (await a.ws()).readiness[0];
+    assert.equal(ready.status, "Partial");
+    assert.equal(
+      ready.lines.reduce((n: number, r: R) => n + r.coverage, 0),
+      10,
+      "Ten physical B units cannot cover twenty A+B requirements",
+    );
+    await a.request("/api/v1/inventory/movements", {
+      projectId: p.id,
+      partId: parts[1].id,
+      locationId: loc.id,
+      referenceId: reserved.id,
+      action: "reverse",
+      quantity: 10,
+      note: "Reconcile allocation",
+    });
+    for (const [original, replacement] of [
+      [0, 2],
+      [1, 0],
+    ]) {
+      const s = await a.create("substitution", {
+        projectId: p.id,
+        taskId: t.id,
+        originalPartId: parts[original].id,
+        replacementPartId: parts[replacement].id,
+        reason: "Reviewed alternate compatibility",
+      });
+      await a.transition("substitution", s, "Approved");
+    }
+    await allocate(0, 10);
+    await allocate(2, 10);
+    ready = (await a.ws()).readiness[0];
+    assert.equal(
+      ready.status,
+      "Ready",
+      "A must be usable for B while C covers A",
+    );
+    assert.equal(
+      ready.lines.reduce((n: number, r: R) => n + r.coverage, 0),
+      20,
+    );
+    const used = new Map<string, number>();
+    for (const line of ready.lines)
+      for (const source of line.coverageSources)
+        used.set(
+          source.partId,
+          (used.get(source.partId) || 0) + source.quantity,
+        );
+    assert.equal(used.get(parts[0].id), 10);
+    assert.equal(used.get(parts[2].id), 10);
+  } finally {
+    await h.close();
+  }
+});

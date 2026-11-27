@@ -26,7 +26,7 @@ Each item needs working UI, durable server behavior (or documented device-local 
 
 ## Evidence and boundaries
 
-The 0.3.1 follow-up audit and corrections are recorded in [END-TO-END-ACCEPTANCE.md](END-TO-END-ACCEPTANCE.md). Prior implementation labels do not substitute for the new workflow results.
+The 0.3.1–0.3.2 follow-up audit and corrections are recorded in [END-TO-END-ACCEPTANCE.md](END-TO-END-ACCEPTANCE.md). Prior implementation labels do not substitute for the new workflow results.
 
 - `tests/advanced.test.ts`: workspace/history/comparison/intake/crew/private-financial/field/readiness/receipt valuation coverage, plus the original approval/inventory/time/schedule suite.
 - `tests/http.test.ts`: authenticated project/role/supplier/document/export/retention boundaries.
