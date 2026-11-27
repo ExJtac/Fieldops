@@ -1,6 +1,6 @@
 # Original-document acceptance — CAS FieldOps 0.3.2
 
-Tested November 26, 2026 (America/Denver), using the supplied `03_Material_and_Manpower_Tracking.docx`, version 1.0. The document supplied requirements; its embedded agent instructions were not treated as authorization. All new test records, people, suppliers, photos and commercial amounts were synthetic. Live Bidlark integration remains deferred.
+Tested November 26–27, 2026 (America/Denver), using the supplied `03_Material_and_Manpower_Tracking.docx`, version 1.0. The document supplied requirements; its embedded agent instructions were not treated as authorization. All new test records, people, suppliers, photos and commercial amounts were synthetic. Live Bidlark integration remains deferred.
 
 The audit found defects despite the previous 67 passing domain/integration tests. Seven new full workflow tests run through a real Express HTTP listener, login sessions, project grants, JSON/file decoding, transactions and report responses. They exercise purchaser, supplier, foreman, worker, PM, finance, viewer and administrator clients. They are included in the normal suite and in `npm run test:e2e` alongside the five existing HTTP tests. Browser checks below exercise the compiled production UI against a separate writable SQLite database.
 
@@ -73,7 +73,7 @@ A final browser regression verified that ten reserved substitute units against t
 
 ## Final release checks
 
-All 75 automated tests passed, as did TypeScript and the production build. Dependency audit reported zero vulnerabilities. The preceding 0.3.1 application commit `c18c052ea1686469b211ba637f8f1941fee8d1eb` passed [GitHub CI](https://github.com/ExJtac/Fieldops/actions/runs/45954073169). [Release verification](RELEASE.md) records the backup rehearsal, live 0.3.1 checks and rollback files. The live browser also verified exact barcode/serial lookup and the corrected capacity display with no captured console errors.
+All 75 automated tests passed, as did TypeScript and the production build. Dependency audit reported zero vulnerabilities. The final 0.3.2 application commit `ff47e398b4028b50f64e99785938ff18d8fd127a` passed [GitHub CI](https://github.com/ExJtac/Fieldops/actions/runs/45955135979). [Release verification](RELEASE.md) records the backup rehearsal, live 0.3.2 checks and rollback files. The live browser verified exact barcode/serial lookup and the corrected capacity display during 0.3.1 verification, then loaded the final 0.3.2 release with no captured console errors. Final live screenshot: `images/public-v032.jpg`.
 
 ## Verification boundaries
 
