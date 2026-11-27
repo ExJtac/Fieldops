@@ -8,8 +8,25 @@ import {
   requireThat,
   hash,
 } from "./store.js";
+import { validateExtra } from "./extensions-validation.js";
+import { projectAccess, filterRecords, projectIds } from "./access.js";
 import { schemas, type Kind, date, qty } from "./schemas.js";
 const permissions: Record<string, Role[]> = {
+  conversion: ["admin", "purchasing"],
+  poAmendment: ["admin", "purchasing"],
+  credit: ["admin", "purchasing"],
+  shipment: ["admin", "purchasing"],
+  asset: ["admin", "purchasing", "foreman"],
+  adjustment: ["admin", "purchasing", "foreman"],
+  crewTemplate: ["admin", "pm"],
+  calendar: ["admin", "pm"],
+  equipment: ["admin", "pm"],
+  scheduleRevision: ["admin", "pm"],
+  checkin: ["admin", "pm", "foreman", "worker"],
+  costCode: ["admin", "pm"],
+  notice: ["admin", "pm"],
+  productionCorrection: ["admin", "pm", "foreman"],
+  retention: ["admin"],
   project: ["admin", "pm"],
   task: ["admin", "pm"],
   part: ["admin", "purchasing"],
@@ -57,10 +74,24 @@ export class Operations {
     );
   }
   ref(a: Actor, kind: string, id: string) {
-    return this.store.get(a.org, kind, id);
+    const r = this.store.get(a.org, kind, id);
+    if (
+      ["worker", "calendar", "leave"].includes(kind) &&
+      !["admin", "pm"].includes(a.role)
+    )
+      requireThat(
+        filterRecords(this.store, a, kind, [r]).length > 0,
+        "Worker record access denied",
+        403,
+      );
+    if (kind === "project") projectAccess(this.store, a, r.id);
+    else if (r.projectId) projectAccess(this.store, a, r.projectId);
+    if (a.role === "worker" && ["time", "timer", "checkin"].includes(kind))
+      requireThat(r.workerId === a.workerId, "Own records only", 403);
+    return r;
   }
   all(a: Actor, kind: string) {
-    return this.store.list(a.org, kind);
+    return filterRecords(this.store, a, kind, this.store.list(a.org, kind));
   }
   write<T>(a: Actor, key: string, payload: any, fn: () => T): T {
     requireThat(
@@ -104,6 +135,7 @@ export class Operations {
     requireThat(kind in schemas, "Unknown record type");
     const b: any = schemas[kind].parse(raw);
     this.validateRefs(a, b);
+    validateExtra(this, a, kind, b);
     if (kind === "part") {
       const candidates = [b.partNumber, ...b.aliases].map((s: string) =>
         s.toLowerCase(),
@@ -141,7 +173,7 @@ export class Operations {
       );
     if (kind === "po") {
       requireThat(
-        !this.all(a, "po").some((p) => p.number === b.number),
+        !this.store.list(a.org, "po").some((p) => p.number === b.number),
         "PO number already exists",
       );
       b.status = "Draft";
@@ -185,13 +217,15 @@ export class Operations {
         );
       }
       this.timeConflicts(a, b);
+      b.workerReviewed = a.workerId === b.workerId;
+      b.reviewedByWorker = b.workerReviewed ? a.id : null;
       b.status = "Draft";
     }
     if (kind === "leave")
       requireThat(
-        !this.all(a, "leave").some(
-          (l) => l.workerId === b.workerId && l.date === b.date,
-        ),
+        !this.store
+          .list(a.org, "leave")
+          .some((l) => l.workerId === b.workerId && l.date === b.date),
         "Leave already recorded on this date",
       );
     if (kind === "production") {
@@ -227,7 +261,12 @@ export class Operations {
         "Substitutes must be different parts with matching units",
       );
     }
-    return this.store.add(a, kind, b);
+    const saved = this.store.add(a, kind, b);
+    if (kind === "project" && a.role !== "admin")
+      this.store.db
+        .prepare("INSERT OR IGNORE INTO project_access VALUES(?,?,?)")
+        .run(a.org, a.id, saved.id);
+    return saved;
   }
   edit(a: Actor, kind: Kind, id: string, raw: any) {
     this.allowed(a, kind);
@@ -243,6 +282,10 @@ export class Operations {
         "worker",
         "po",
         "time",
+        "calendar",
+        "crewTemplate",
+        "equipment",
+        "costCode",
       ].includes(kind),
       "Use a correction or a new proposal for this record",
     );
@@ -295,7 +338,7 @@ export class Operations {
     if (kind === "po") {
       requireThat(
         old.status === "Draft",
-        "Only draft POs can be edited. Cancel the unreceived balance and create a replacement for issued orders",
+        "Only draft POs can be edited. Propose an approved PO amendment for issued orders",
       );
       requireThat(
         b.projectId === old.projectId && b.number === old.number,
@@ -318,8 +361,39 @@ export class Operations {
           "You can only edit your own time",
           403,
         );
+      validateExtra(this, a, kind, b);
       this.timeConflicts(a, b, id);
       b.status = "Draft";
+      b.workerReviewed = false;
+      b.reviewedByWorker = null;
+    }
+    if (["part", "equipment", "crewTemplate"].includes(kind))
+      validateExtra(this, a, kind, b);
+    if (kind === "equipment")
+      requireThat(
+        b.projectId === old.projectId,
+        "Equipment project cannot change",
+      );
+    if (kind === "costCode")
+      requireThat(
+        b.projectId === old.projectId &&
+          b.code === old.code &&
+          b.laborType === old.laborType,
+        "Cost code identity cannot change after creation",
+      );
+    if (kind === "calendar")
+      requireThat(b.workerId === old.workerId, "Calendar worker cannot change");
+    if (kind === "task") {
+      validateExtra(this, a, kind, b);
+      const visit = (id: string, seen: Set<string>): void => {
+        requireThat(!seen.has(id), "Dependency cycle");
+        const next = new Set(seen).add(id);
+        for (const d of id === old.id
+          ? b.dependencies
+          : this.ref(a, "task", id).dependencies || [])
+          visit(d, next);
+      };
+      visit(old.id, new Set());
     }
     return this.store.update(
       a,
@@ -372,7 +446,19 @@ export class Operations {
           "A project manager must review time",
           403,
         );
-        if (status === "Approved") this.separation(a, r);
+        if (status === "Approved") {
+          this.separation(a, r);
+          const linked = this.store.db
+            .prepare(
+              "SELECT id FROM users WHERE org=? AND worker_id=? AND active=1",
+            )
+            .all(a.org, r.workerId);
+          if (linked.length)
+            requireThat(
+              r.workerReviewed,
+              "Worker must review submitted hours before approval",
+            );
+        }
       }
       if (status === "Submitted") this.timeConflicts(a, r, r.id);
       if (status === "Rejected" || status === "Correction requested")
@@ -417,6 +503,13 @@ export class Operations {
       allowed = r.status === "Draft" ? ["Recorded"] : [];
     }
     requireThat(allowed.includes(status), "Invalid workflow transition");
+    if (
+      kind === "time" &&
+      status === "Submitted" &&
+      a.workerId === r.workerId
+    ) {
+      r.workerReviewed = true;
+    }
     this.store.audit(
       a,
       kind + "." + status.toLowerCase().replaceAll(" ", "_"),
@@ -427,7 +520,14 @@ export class Operations {
       a,
       kind,
       id,
-      { status, reviewedBy: a.id, reviewReason: raw.reason || "" },
+      {
+        status,
+        reviewedBy: a.id,
+        reviewReason: raw.reason || "",
+        ...(kind === "time" && a.workerId === r.workerId
+          ? { workerReviewed: true, reviewedByWorker: a.id }
+          : {}),
+      },
       z.number().int().parse(raw.version),
     );
   }
@@ -441,12 +541,14 @@ export class Operations {
       );
   }
   balance(a: Actor, partId: string, locationId?: string, taskId?: string) {
-    const ms = this.all(a, "movement").filter(
-      (m) =>
-        m.partId === partId &&
-        (!locationId || m.locationId === locationId) &&
-        (!taskId || m.taskId === taskId),
-    );
+    const ms = this.store
+      .list(a.org, "movement")
+      .filter(
+        (m) =>
+          m.partId === partId &&
+          (!locationId || m.locationId === locationId) &&
+          (!taskId || m.taskId === taskId),
+      );
     const sum = (k: string) =>
       Math.round(ms.reduce((s, m) => s + (m[k] || 0), 0) * 1e6) / 1e6;
     return {
@@ -462,7 +564,7 @@ export class Operations {
       .filter((m) => m.poId === poId && m.lineId === lineId)
       .reduce((s, m) => s + (m.received || 0), 0);
   }
-  movement(a: Actor, raw: any) {
+  movement(a: Actor, raw: any, assetId = "") {
     requireThat(
       ["admin", "purchasing", "foreman"].includes(a.role),
       "Your role cannot move inventory",
@@ -472,6 +574,7 @@ export class Operations {
       .object({
         action: z.enum([
           "receive",
+          "inspect",
           "reserve",
           "release",
           "issue",
@@ -491,22 +594,70 @@ export class Operations {
         referenceId: z.string().default(""),
         note: z.string().min(3).max(3000),
         serial: z.string().max(300).default(""),
+        shipmentId: z.string().default(""),
+        condition: z.enum(["Good", "Damaged", "Quarantine"]).default("Good"),
       })
       .parse(raw);
     this.ref(a, "part", b.partId);
     this.ref(a, "location", b.locationId);
-    if (b.taskId) this.validateRefs(a, b);
+    this.validateRefs(a, b);
     const bal = this.balance(a, b.partId, b.locationId),
       taskBal = this.balance(a, b.partId, b.locationId, b.taskId);
     const q = b.quantity;
+    const assets = this.store
+      .list(a.org, "asset")
+      .filter((x) => x.partId === b.partId && x.locationId === b.locationId);
+    if (!assetId && assets.length) {
+      const count = (state: string, task = false) =>
+        assets.filter(
+          (x) => x.status === state && (!task || x.taskId === b.taskId),
+        ).length;
+      if (
+        ["reserve", "transfer", "return"].includes(b.action) &&
+        b.condition === "Good"
+      )
+        requireThat(
+          q <= bal.available - count("Received") + 1e-6,
+          "Move serialized units through asset custody",
+        );
+      if (["release", "issue"].includes(b.action))
+        requireThat(
+          q <= taskBal.reserved - count("Reserved", true) + 1e-6,
+          "Move serialized reservations through asset custody",
+        );
+      if (b.action === "install")
+        requireThat(
+          q <= taskBal.issued - count("Issued", true) + 1e-6,
+          "Install serialized units through asset custody",
+        );
+    }
+    if (b.shipmentId) {
+      const shipment = this.ref(a, "shipment", b.shipmentId);
+      requireThat(
+        b.action === "receive" &&
+          shipment.poId === b.poId &&
+          shipment.status !== "Cancelled",
+        "Receipt shipment must match PO",
+      );
+      const line = shipment.lines.find((l: any) => l.lineId === b.lineId);
+      const received = this.all(a, "movement")
+        .filter((m) => m.shipmentId === shipment.id && m.lineId === b.lineId)
+        .reduce((s, m) => s + m.received, 0);
+      requireThat(
+        line && received + q <= line.quantity + 1e-6,
+        "Receipt exceeds shipment quantity",
+      );
+    }
+
     let delta: any = {
       stock: 0,
       reserved: 0,
       issued: 0,
       installed: 0,
       received: 0,
+      quarantined: 0,
     };
-    if (b.action === "receive" || b.action === "return") {
+    if (["receive", "return", "inspect"].includes(b.action)) {
       this.allowed(a, "po");
       const po = this.ref(a, "po", b.poId);
       const line = po.lines.find((l: any) => l.id === b.lineId);
@@ -528,14 +679,38 @@ export class Operations {
           received + q <= line.quantity + 1e-6,
           "Receipt exceeds remaining PO quantity",
         );
-        delta.stock = q;
+        delta.stock = b.condition === "Good" ? q : 0;
+        delta.quarantined = b.condition === "Good" ? 0 : q;
         delta.received = q;
+      } else if (b.action === "inspect") {
+        const held = this.store
+          .list(a.org, "movement")
+          .filter(
+            (m) =>
+              m.poId === po.id &&
+              m.lineId === line.id &&
+              m.locationId === b.locationId,
+          )
+          .reduce((n, m) => n + (m.quarantined || 0), 0);
+        requireThat(q <= held, "Inspection release exceeds quarantined stock");
+        delta.stock = q;
+        delta.quarantined = -q;
       } else {
+        const held = this.store
+          .list(a.org, "movement")
+          .filter(
+            (m) =>
+              m.poId === po.id &&
+              m.lineId === line.id &&
+              m.locationId === b.locationId,
+          )
+          .reduce((n, m) => n + (m.quarantined || 0), 0);
         requireThat(
-          q <= received && q <= bal.available,
+          q <= received && q <= (b.condition === "Good" ? bal.available : held),
           "Cannot return reserved, issued, or unreceived stock",
         );
-        delta.stock = -q;
+        delta.stock = b.condition === "Good" ? -q : 0;
+        delta.quarantined = b.condition === "Good" ? 0 : -q;
         delta.received = -q;
       }
     }
@@ -594,6 +769,19 @@ export class Operations {
       );
       const original = this.ref(a, "movement", b.referenceId);
       requireThat(
+        !original.assetId &&
+          !this.store
+            .list(a.org, "asset")
+            .some((x) => x.receiptId === original.id),
+        "Serialized custody cannot be reversed as bulk stock",
+      );
+      requireThat(
+        !this.all(a, "credit").some(
+          (c) => c.returnMovementId === original.id && c.status !== "Rejected",
+        ),
+        "A credit references this return; resolve the credit before reversal",
+      );
+      requireThat(
         !["reverse", "transfer", "transfer-in"].includes(original.action),
         "Reverse the underlying non-transfer movement; use a return transfer for transfers",
       );
@@ -616,10 +804,22 @@ export class Operations {
         lineId: original.lineId,
       });
       delta = Object.fromEntries(
-        ["stock", "reserved", "issued", "installed", "received"].map((k) => [
-          k,
-          -original[k],
-        ]),
+        [
+          "stock",
+          "reserved",
+          "issued",
+          "installed",
+          "received",
+          "quarantined",
+        ].map((k) => [k, -(original[k] || 0)]),
+      );
+      const quarantine = this.store
+        .list(a.org, "movement")
+        .filter((m) => m.partId === b.partId && m.locationId === b.locationId)
+        .reduce((n, m) => n + (m.quarantined || 0), 0);
+      requireThat(
+        quarantine + (delta.quarantined || 0) >= 0,
+        "Reverse quarantine-dependent movements first",
       );
       if (b.poId && delta.received) {
         const po = this.ref(a, "po", b.poId),
@@ -641,13 +841,14 @@ export class Operations {
         "Reverse dependent movements first",
       );
     }
-    const record = this.store.add(a, "movement", { ...b, ...delta });
+    const record = this.store.add(a, "movement", { ...b, ...delta, assetId });
     if (b.action === "transfer")
       this.store.add(a, "movement", {
         ...b,
         action: "transfer-in",
         locationId: b.toLocationId,
         referenceId: record.id,
+        assetId,
         stock: q,
         reserved: 0,
         issued: 0,
@@ -656,18 +857,45 @@ export class Operations {
       });
     return record;
   }
+  workerCapacity(a: Actor, project: R, worker: R, day: string) {
+    const c = this.store
+      .list(a.org, "calendar")
+      .find((c) => c.workerId === worker.id);
+    const p = {
+      ...project,
+      holidays: [
+        ...(project.holidays || []),
+        ...(project.closures || []),
+        ...(c?.holidays || []),
+      ],
+      workdays: (project.workdays || [1, 2, 3, 4, 5]).filter(
+        (d: number) => !c || c.workdays.includes(d),
+      ),
+    };
+    return capacity(
+      p,
+      {
+        ...worker,
+        dailyHours: c ? c.shiftHours - c.unpaidBreak : worker.dailyHours,
+      },
+      day,
+      this.store.list(a.org, "leave"),
+    );
+  }
   assignmentConflicts(a: Actor, b: any, exclude?: string) {
     this.validateRefs(a, b);
     const w = this.ref(a, "worker", b.workerId),
       p = this.ref(a, "project", b.projectId),
       t = this.ref(a, "task", b.taskId);
-    const others = this.all(a, "assignment").filter(
-      (x) =>
-        x.id !== exclude &&
-        x.workerId === b.workerId &&
-        x.date === b.date &&
-        x.status !== "Cancelled",
-    );
+    const others = this.store
+      .list(a.org, "assignment")
+      .filter(
+        (x) =>
+          x.id !== exclude &&
+          x.workerId === b.workerId &&
+          x.date === b.date &&
+          x.status !== "Cancelled",
+      );
     const conflicts: string[] = [];
     if (b.start + b.hours > 24)
       conflicts.push("Shift crosses midnight; split it into dated shifts");
@@ -679,7 +907,7 @@ export class Operations {
       )
     )
       conflicts.push("Worker has an overlapping assignment");
-    const available = capacity(p, w, b.date, this.all(a, "leave"));
+    const available = this.workerCapacity(a, p, w, b.date);
     if (others.reduce((s, x) => s + x.hours, 0) + b.hours > available)
       conflicts.push(
         `Planned hours exceed ${available} available hours (calendar/leave included)`,
@@ -693,6 +921,71 @@ export class Operations {
       )
     )
       conflicts.push("Required certification is missing or expired");
+    const c = this.store
+      .list(a.org, "calendar")
+      .find((c) => c.workerId === w.id);
+    if (c) {
+      if (
+        b.start < c.shiftStart ||
+        b.start + b.hours > c.shiftStart + c.shiftHours
+      )
+        conflicts.push("Outside worker shift window");
+      const dayIndex = (new Date(b.date + "T00:00:00Z").getUTCDay() + 6) % 7,
+        weekStart = addDays(b.date, -dayIndex);
+      const total =
+        this.store
+          .list(a.org, "assignment")
+          .filter(
+            (x) =>
+              x.id !== exclude &&
+              x.workerId === w.id &&
+              x.status !== "Cancelled" &&
+              x.date >= weekStart &&
+              x.date < addDays(weekStart, 7),
+          )
+          .reduce((s, x) => s + x.hours, 0) + b.hours;
+      if (total > c.weeklyLimit && !c.overtimeAllowed)
+        conflicts.push("Weekly limit requires authorized overtime");
+    }
+    for (const id of t.dependencies || []) {
+      const dep = this.ref(a, "task", id);
+      const produced = this.all(a, "production")
+        .filter((x) => x.taskId === id && x.status === "Approved")
+        .reduce((n, x) => n + x.quantity, 0);
+      if (produced < dep.target || !dep.target) {
+        const end = dep.forecastEnd || dep.baselineEnd;
+        if (!end) conflicts.push("Dependency finish is unconfirmed");
+        else if (b.date <= end)
+          conflicts.push("Assignment precedes dependency finish");
+      }
+    }
+    for (const id of t.equipmentIds || []) {
+      const eq = this.ref(a, "equipment", id);
+      if (
+        !eq.availableFrom ||
+        b.date < eq.availableFrom ||
+        (eq.availableUntil && b.date > eq.availableUntil)
+      )
+        conflicts.push("Required equipment is outside its availability window");
+      const collision = this.store
+        .list(a.org, "assignment")
+        .some(
+          (x) =>
+            x.id !== exclude &&
+            x.taskId !== t.id &&
+            x.status !== "Cancelled" &&
+            x.date === b.date &&
+            b.start < x.start + x.hours &&
+            x.start < b.start + b.hours &&
+            (
+              this.store.get(a.org, "task", x.taskId).equipmentIds || []
+            ).includes(id),
+        );
+      if (collision)
+        conflicts.push(
+          "Required equipment is assigned to another work package",
+        );
+    }
     return conflicts;
   }
   moveAssignment(a: Actor, id: string, raw: any) {
@@ -717,15 +1010,17 @@ export class Operations {
   timeConflicts(a: Actor, b: any, exclude?: string) {
     const total = b.regular + b.overtime;
     requireThat(
-      !this.all(a, "time").some(
-        (t) =>
-          t.id !== exclude &&
-          t.workerId === b.workerId &&
-          t.date === b.date &&
-          t.status !== "Rejected" &&
-          b.start < t.start + t.regular + t.overtime &&
-          b.start + total > t.start,
-      ),
+      !this.store
+        .list(a.org, "time")
+        .some(
+          (t) =>
+            t.id !== exclude &&
+            t.workerId === b.workerId &&
+            t.date === b.date &&
+            t.status !== "Rejected" &&
+            b.start < t.start + t.regular + t.overtime &&
+            b.start + total > t.start,
+        ),
       "Overlapping or duplicate time entry",
       409,
     );
@@ -775,7 +1070,10 @@ export class Operations {
             (l: any) =>
               l.confirmedETA &&
               r.needBy &&
-              addDays(l.confirmedETA, 2) > r.needBy,
+              addDays(
+                l.confirmedETA,
+                this.ref(a, "project", r.projectId).stagingDays ?? 2,
+              ) > r.needBy,
           );
           return {
             ...r,
@@ -802,7 +1100,7 @@ export class Operations {
       const status =
         !t.released || holds.length
           ? "Blocked"
-          : !lines.length
+          : !lines.length && t.materialRequired !== false
             ? "Unconfirmed"
             : lines.every((l) => l.shortage === 0)
               ? "Ready"
@@ -822,7 +1120,7 @@ export class Operations {
         reason: !t.released
           ? "Section has not been released"
           : holds[0]?.reason ||
-            (!lines.length
+            (!lines.length && t.materialRequired !== false
               ? "Material requirements not entered"
               : lines.some((l) => l.shortage > 0)
                 ? "Required stock is not fully allocated"
@@ -862,6 +1160,9 @@ export class Operations {
             .filter((x) => x.taskId === t.id && x.status !== "Cancelled")
             .reduce((s, x) => s + x.hours, 0),
           actual,
+          allocatedBudget: t.allocatedHours ?? null,
+          budgetVariance:
+            t.allocatedHours == null ? null : t.allocatedHours - actual,
           earned: installed * t.unitHours,
           remaining: rf?.remainingHours ?? null,
           estimateAtCompletion: rf ? actual + rf.remainingHours : null,
@@ -869,13 +1170,22 @@ export class Operations {
       });
   }
   snapshot(a: Actor) {
-    const kinds = [...Object.keys(schemas), "movement", "settings"];
+    const kinds = [
+      ...Object.keys(schemas),
+      "movement",
+      "settings",
+      "timer",
+      "leveling",
+      "publication",
+    ];
     const data: Record<string, any> = {};
     for (const kind of kinds) data[kind] = this.all(a, kind);
     if (!canCost(a)) {
       data.quote = [];
+      data.poAmendment = [];
+      data.credit = [];
       data.po = data.po.map((p: R) => {
-        const { freight, tax, ...rest } = p;
+        const { freight, tax, notes, source, ...rest } = p;
         return { ...rest, lines: p.lines.map(({ unitCost, ...l }: any) => l) };
       });
     }
@@ -902,53 +1212,31 @@ export class Operations {
         );
       data.movement = [];
       data.supplier = [];
+      data.publication = [];
+      data.retention = [];
+      data.leveling = [];
+      data.calendar = data.calendar.filter((c: R) => c.workerId === a.workerId);
       data.rfq = [];
     }
     const readiness = this.readiness(a),
       forecast = this.forecast(a);
-    if (a.role === "viewer")
+    if (a.role === "viewer") {
+      const releases = this.all(a, "publication").filter(
+        (r) => r.status === "Published",
+      );
+      const latest = new Map<string, R>();
+      for (const r of releases) latest.set(r.projectId, r);
       return {
         actor: a,
         data: {
-          project: data.project.map(({ id, name, customer }: R) => ({
-            id,
-            name,
-            customer,
-          })),
-          task: data.task.map(({ id, projectId, name, section }: R) => ({
-            id,
-            projectId,
-            name,
-            section,
-          })),
+          project: [...latest.values()].map((r) => r.project),
+          task: [...latest.values()].flatMap((r) => r.tasks),
         },
-        readiness: readiness.map(({ lines, holds, ...r }) => ({
-          ...r,
-          holds: holds.map((h) => ({ reason: h.reason })),
-        })),
-        forecast: forecast.map(
-          ({
-            taskId,
-            projectId,
-            name,
-            section,
-            installed,
-            target,
-            unit,
-            progress,
-          }) => ({
-            taskId,
-            projectId,
-            name,
-            section,
-            installed,
-            target,
-            unit,
-            progress,
-          }),
-        ),
+        readiness: [...latest.values()].flatMap((r) => r.readiness),
+        forecast: [...latest.values()].flatMap((r) => r.forecast),
         audit: [],
       };
+    }
     data.assignment = data.assignment.map((r: R) => ({
       ...r,
       currentConflicts:
@@ -965,7 +1253,17 @@ export class Operations {
           : readiness,
       forecast: a.role === "worker" ? [] : forecast,
       audit: ["admin", "pm"].includes(a.role)
-        ? this.store.auditList(a.org)
+        ? this.store
+            .auditList(a.org)
+            .filter(
+              (e: any) =>
+                a.role === "admin" ||
+                Object.values(data).some(
+                  (records: any) =>
+                    Array.isArray(records) &&
+                    records.some((r: R) => r.id === e.entity),
+                ),
+            )
         : [],
       balances: data.part.flatMap((p: R) =>
         data.location.map((l: R) => ({

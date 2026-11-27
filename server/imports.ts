@@ -1,6 +1,6 @@
 import ExcelJS from "exceljs";
 import { Operations } from "./domain.js";
-import { type Actor, requireThat } from "./store.js";
+import { type Actor, requireThat, hash } from "./store.js";
 export type ImportRow = {
   partNumber: string;
   manufacturer: string;
@@ -9,6 +9,8 @@ export type ImportRow = {
   quantity: number;
   taskId: string;
   source: string;
+  needBy: string;
+  conversionId: string;
 };
 export function previewImport(
   ops: Operations,
@@ -32,6 +34,8 @@ export function previewImport(
       quantity: Number(raw.quantity),
       taskId: String(raw.taskId ?? "").trim(),
       source: String(raw.source ?? "").slice(0, 3000),
+      needBy: String(raw.needBy || ""),
+      conversionId: String(raw.conversionId || ""),
     };
     const errors: string[] = [];
     if (!row.partNumber) errors.push("Missing part number");
@@ -53,7 +57,19 @@ export function previewImport(
           : "Catalog part not found; create it first",
       );
     const part = matches[0];
-    if (part && part.unit !== row.unit)
+    const conversion =
+      part &&
+      ops
+        .all(a, "conversion")
+        .find(
+          (c) =>
+            c.id === row.conversionId &&
+            c.partId === part.id &&
+            c.fromUnit === row.unit &&
+            c.toUnit === part.unit &&
+            c.status === "Approved",
+        );
+    if (part && part.unit !== row.unit && !conversion)
       errors.push(
         `Unit mismatch: catalog uses ${part.unit}, source uses ${row.unit}`,
       );
@@ -76,6 +92,15 @@ export function previewImport(
       partId: part?.id,
       existingId: existing?.id,
       previousQuantity: existing?.quantity,
+      normalizedQuantity: row.quantity * (conversion?.factor || 1),
+      reviewToken: hash(
+        JSON.stringify({
+          raw,
+          partVersion: part?.version,
+          requirement: existing || null,
+          conversion: conversion || null,
+        }),
+      ),
       errors,
     };
   });
@@ -91,15 +116,25 @@ export function commitImport(ops: Operations, a: Actor, raw: any) {
       raw.sourceVersion.trim().length > 0,
     "Source version is required",
   );
+  requireThat(
+    Array.isArray(raw.reviewTokens) &&
+      raw.reviewTokens.length === preview.length &&
+      preview.every((p, i) => p.reviewToken === raw.reviewTokens[i]),
+    "Import review is stale or missing; preview again",
+    409,
+  );
   const results = preview.map((p) => {
     const body = {
       projectId: raw.projectId,
       partId: p.partId!,
       taskId: p.row.taskId,
-      quantity: p.row.quantity,
+      quantity: p.normalizedQuantity,
       source: p.row.source || raw.source || "Imported BOM",
       sourceVersion: raw.sourceVersion,
-      needBy: "",
+      needBy:
+        p.row.needBy ||
+        (p.existingId ? ops.ref(a, "requirement", p.existingId).needBy : "") ||
+        "",
     };
     if (p.existingId) {
       const old = ops.ref(a, "requirement", p.existingId);

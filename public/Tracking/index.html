@@ -32,7 +32,7 @@
         "operatingSystem": "Web; self-hosted Node.js",
         "url": "https://cas-tx.com/Tracking/",
         "downloadUrl": "https://github.com/ExJtac/cas-fieldops",
-        "softwareVersion": "0.1.0",
+        "softwareVersion": "0.2.0",
         "license": "https://opensource.org/license/mit",
         "description": "Open-source construction material and manpower tracking for self-hosted team use.",
         "author": {
@@ -145,10 +145,10 @@
           </div>
           <ul>
             <li>CSV, XLSX and JSON import review</li>
-            <li>Multi-line POs and supplier promises</li>
+            <li>PO amendments, backorders and split shipments</li>
             <li>Receipts, reservations, transfers and returns</li>
             <li>Material shortages and schedule holds</li>
-            <li>Receipt photos and PDF evidence</li>
+            <li>Serial custody, warranties and receiving evidence</li>
           </ul>
         </div>
         <div class="feature-row">
@@ -162,11 +162,11 @@
             </p>
           </div>
           <ul>
-            <li>People, crews, skills and availability</li>
+            <li>Crew templates, shift calendars and skill expiry</li>
             <li>Weekly resource board with drag-to-move</li>
-            <li>Time submission, approval and correction</li>
+            <li>Timers, worker review, approval and correction</li>
             <li>Task-level installed quantities and earned hours</li>
-            <li>Separate remaining-hour forecasts and scenarios</li>
+            <li>Constraint-aware scenarios and reversible leveling</li>
           </ul>
         </div>
       </section>
@@ -200,21 +200,22 @@ npm run dev</code></pre>
       </section>
       <section class="release">
         <div>
-          <p class="kicker">A WORKING FIRST RELEASE</p>
-          <h2>Start with a pilot.<br />Build on real use.</h2>
+          <p class="kicker">THE STANDALONE EDITION</p>
+          <h2>Ready for your team.<br />Built for your server.</h2>
         </div>
         <div>
           <p>
-            FieldOps 0.1 includes persistent material and manpower workflows,
-            approval rules, audit records and automated regression tests. The
-            online demo is read-only and contains synthetic records. Install
-            your own copy to add projects and use the writable workflows.
+            FieldOps 0.2 includes purchase amendments, serialized inventory,
+            crew calendars, field timers, project access controls, in-app
+            dispatch and detailed PDF/Excel reports. The online demo is
+            read-only and contains synthetic records. Install your own copy to
+            add projects and use the writable workflows.
           </p>
           <p>
-            Advanced features such as project-specific access grants, payroll,
-            notifications, offline sync, automatic resource leveling and live
-            Bidlark integration are future work. The source repository documents
-            the exact release scope.
+            Permissioned payroll exports, approved schedule revisions and
+            reversible resource leveling are included. Live Bidlark integration
+            and optional offline synchronization remain later work. The source
+            repository documents the tested workflows and operational limits.
           </p>
           <a
             href="https://github.com/ExJtac/cas-fieldops/blob/HEAD/docs/ACCEPTANCE.md"

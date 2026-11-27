@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { extraSchemas } from "./extensions-schema.js";
 export function validDate(s: string) {
   return (
     /^\d{4}-\d{2}-\d{2}$/.test(s) &&
@@ -17,6 +18,7 @@ export const qty = z.coerce.number().finite().positive().max(1e9);
 const nonnegative = z.coerce.number().finite().min(0).max(1e9);
 export const unit = z.enum(["ea", "ft", "m", "box", "roll", "hr"]);
 export const schemas = {
+  ...extraSchemas,
   project: z.object({
     name: text,
     customer: optional,
@@ -33,6 +35,8 @@ export const schemas = {
       }),
     fieldBudget: nonnegative.default(0),
     pmBudget: nonnegative.default(0),
+    stagingDays: z.number().int().min(0).max(60).default(2),
+    closures: z.array(date).default([]),
     holidays: z.array(date).default([]),
     workdays: z
       .array(z.number().int().min(0).max(6))
@@ -52,6 +56,14 @@ export const schemas = {
       baselineStart: optionalDate,
       baselineEnd: optionalDate,
       requiredSkill: optional,
+      materialRequired: z.boolean().default(true),
+      dependencies: z.array(z.string()).default([]),
+      equipmentIds: z.array(z.string()).default([]),
+      permits: optional,
+      instructions: optional,
+      allocatedHours: nonnegative.nullable().default(null),
+      priority: z.number().int().min(1).max(5).default(3),
+      changeId: optional,
       released: z.boolean().default(true),
       notes: optional,
     })
@@ -65,6 +77,11 @@ export const schemas = {
     manufacturer: optional,
     description: text,
     unit,
+    trade: optional,
+    csi: optional,
+    unspsc: optional,
+    accessoryIds: z.array(z.string()).default([]),
+    barcode: optional,
     aliases: z.array(z.string().min(1).max(100)).max(50).default([]),
     notes: optional,
   }),
@@ -83,6 +100,8 @@ export const schemas = {
     needBy: optionalDate,
     source: optional,
     sourceVersion: optional,
+    changeId: optional,
+    criticality: z.enum(["normal", "critical"]).default("normal"),
   }),
   quote: z
     .object({
@@ -99,6 +118,13 @@ export const schemas = {
       leadMax: z.coerce.number().int().min(0).max(3650).default(0),
       ackDate: optionalDate,
       validUntil: optionalDate,
+      rfqId: optional,
+      requestDate: optionalDate,
+      responseDate: optionalDate,
+      originalText: optional,
+      tiers: z
+        .array(z.object({ minimum: qty, unitCost: nonnegative }))
+        .default([]),
       source: optional,
       notes: optional,
     })
@@ -118,6 +144,10 @@ export const schemas = {
     projectId: id,
     supplierId: id,
     number: text,
+    source: optional,
+    externalReference: optional,
+    replacesPoId: optional,
+    receivingLocationId: optional,
     currency: z.enum(["USD", "CAD", "EUR", "GBP"]).default("USD"),
     freight: nonnegative.default(0),
     tax: nonnegative.default(0),
@@ -142,6 +172,11 @@ export const schemas = {
     trade: text,
     kind: z.enum(["employee", "contractor"]).default("employee"),
     crew: optional,
+    region: optional,
+    supervisor: optional,
+    vendorReference: optional,
+    employmentReference: optional,
+    qualifications: optional,
     dailyHours: z.coerce.number().min(0.5).max(16).default(8),
     skills: z
       .array(z.object({ name: text, expires: optionalDate }))
@@ -162,6 +197,9 @@ export const schemas = {
     start: z.coerce.number().min(0).max(23.75).default(7),
     hours: z.coerce.number().positive().max(16),
     override: optional,
+    role: optional,
+    priority: z.number().int().min(1).max(5).default(3),
+    allocation: z.number().min(1).max(100).default(100),
   }),
   time: z
     .object({
@@ -170,6 +208,8 @@ export const schemas = {
       workerId: id,
       date,
       start: z.coerce.number().min(0).max(23.75).default(7),
+      costCodeId: optional,
+      workerReviewed: z.boolean().default(false),
       regular: z.coerce.number().min(0).max(16),
       overtime: z.coerce.number().min(0).max(16).default(0),
       notes: optional,
@@ -192,12 +232,14 @@ export const schemas = {
     taskId: id,
     remainingHours: nonnegative,
     reason: text,
+    changeId: optional,
   }),
   hold: z.object({
     projectId: id,
     taskId: id,
     reason: text,
     proposedStart: optionalDate,
+    changeId: optional,
   }),
   substitution: z.object({
     projectId: id,

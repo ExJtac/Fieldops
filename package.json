@@ -1,6 +1,6 @@
 {
   "name": "cas-fieldops",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Open-source construction material and manpower tracking",
   "type": "module",
   "license": "MIT",
@@ -23,6 +23,7 @@
     "express-rate-limit": "^8.2.0",
     "helmet": "^8.1.0",
     "lucide-react": "^0.468.0",
+    "pdfkit": "^0.21.0",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
     "tsx": "^4.20.0",
@@ -32,9 +33,15 @@
   "devDependencies": {
     "@types/express": "^5.0.0",
     "@types/node": "^22.0.0",
+    "@types/pdfkit": "^0.17.7",
     "@types/react": "^19.2.0",
     "@types/react-dom": "^19.2.0",
     "prettier": "^3.10.1",
     "typescript": "^5.9.0"
+  },
+  "overrides": {
+    "exceljs": {
+      "uuid": "^11.1.1"
+    }
   }
 }

@@ -4,6 +4,7 @@ import { randomUUID } from "node:crypto";
 import { Store, type Actor } from "../server/store.js";
 import { Operations, capacity } from "../server/domain.js";
 import { previewImport, commitImport } from "../server/imports.js";
+import { Advanced } from "../server/advanced.js";
 import { seed } from "../server/seed.js";
 function fixture() {
   const store = new Store(":memory:");
@@ -207,6 +208,9 @@ test("duplicate aliases and mismatched units remain explicit review errors", () 
         projectId: f.p.id,
         rows: [row, { ...row, unit: "box" }],
         sourceVersion: "v1",
+        reviewTokens: previewImport(f.o, f.a, f.p.id, [row]).map(
+          (p) => p.reviewToken,
+        ),
       }),
     /review errors/,
   );
@@ -224,11 +228,17 @@ test("BOM revisions replace required quantity instead of double counting", () =>
     projectId: f.p.id,
     rows: [row],
     sourceVersion: "v1",
+    reviewTokens: previewImport(f.o, f.a, f.p.id, [row]).map(
+      (p) => p.reviewToken,
+    ),
   });
   commitImport(f.o, f.a, {
     projectId: f.p.id,
     rows: [{ ...row, quantity: 40 }],
     sourceVersion: "v2",
+    reviewTokens: previewImport(f.o, f.a, f.p.id, [
+      { ...row, quantity: 40 },
+    ]).map((p) => p.reviewToken),
   });
   assert.equal(f.o.all(f.a, "requirement").length, 1);
   assert.equal(f.o.all(f.a, "requirement")[0].quantity, 40);
@@ -450,6 +460,10 @@ test("33 installed units affect only the linked task, with approved denominator"
 });
 test("role redaction: PM and foreman cannot see vendor unit costs; GC cannot see workers", () => {
   const f = fixture();
+  f.store.db
+    .prepare("INSERT INTO project_access VALUES(?,?,?)")
+    .run(f.a.org, f.a.id, f.p.id);
+  new Advanced(f.o).publish(f.a, { projectId: f.p.id });
   for (const role of ["pm", "foreman"] as const) {
     const snap: any = f.o.snapshot({ ...f.a, role });
     assert.equal(snap.data.po[0].lines[0].unitCost, undefined);
@@ -472,6 +486,9 @@ test("role redaction: PM and foreman cannot see vendor unit costs; GC cannot see
 });
 test("worker cannot submit another worker’s time", () => {
   const f = fixture();
+  f.store.db
+    .prepare("INSERT INTO project_access VALUES(?,?,?)")
+    .run(f.a.org, f.a.id, f.p.id);
   assert.throws(
     () =>
       f.o.create({ ...f.a, role: "worker", workerId: "different" }, "time", {
@@ -481,7 +498,7 @@ test("worker cannot submit another worker’s time", () => {
         date: "2026-12-01",
         regular: 8,
       }),
-    /own time/,
+    /own time|Worker record access denied/,
   );
 });
 test("segregation of duties rejects self approval", () => {

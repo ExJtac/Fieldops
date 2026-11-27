@@ -1,7 +1,9 @@
+import { processEvents } from "./events.js";
 import { createApp } from "./app.js";
 import { Store } from "./store.js";
 import { randomBytes, randomUUID } from "node:crypto";
 import { Operations } from "./domain.js";
+import { seedExtensions } from "./seed-extensions.js";
 import { seed } from "./seed.js";
 import { resolve } from "node:path";
 const store = new Store(process.env.DATABASE_PATH || "data/fieldops.sqlite");
@@ -24,7 +26,20 @@ if (
     store.add(a, "settings", { separation: false, publicDemo: true });
     seed(new Operations(store), a);
   });
+if (process.env.DEMO_READ_ONLY === "true") {
+  const u = store.db.prepare("SELECT id FROM users LIMIT 1").get() as any;
+  if (u) {
+    const a = store.user(u.id);
+    if (store.list(a.org, "settings").some((s) => s.publicDemo === true))
+      store.tx(() => seedExtensions(new Operations(store), a));
+  }
+}
 const app = createApp(store);
+const eventTimer =
+  process.env.DEMO_READ_ONLY !== "true"
+    ? setInterval(() => processEvents(store), 5000)
+    : null;
+eventTimer?.unref();
 if (process.env.NODE_ENV === "production") {
   const express = (await import("express")).default;
   app.use(express.static(resolve("dist")));
@@ -44,6 +59,7 @@ const server = app.listen(port, host, () =>
 );
 process.on("SIGTERM", () =>
   server.close(() => {
+    if (eventTimer) clearInterval(eventTimer);
     store.close();
     process.exit(0);
   }),

@@ -25,25 +25,33 @@ Or run `docker compose up --build -d`; the port is bound to localhost. The named
 
 ## Working workflows
 
-- Projects, sections, tasks, immutable baseline dates, quoted field/PM budgets, proposed schedule holds and scope changes.
-- Part catalog with exact aliases; reviewed CSV/XLSX/JSON BOM imports, column mapping, unit and duplicate validation, and revisions that replace quantities without double counting.
-- Suppliers, recorded RFQs, supplier quotes, landed totals, approval-controlled multi-line purchase orders, cancellation of unreceived balances, and separately recorded confirmed versus forecast ETAs.
-- Partial receipts, reservations, release, issue, installation, returns, warehouse transfers and admin reversals. An append-only ledger prevents over-receipt and double allocation.
-- Workers, crews, skills and expiry, calendars, holidays and leave. Weekly resource board with drag-to-move, cross-project conflict checking, and justified manager overrides.
-- Manual and bulk crew time entries, submission, approval/rejection, locking and correction requests. Only approved/locked time and pending corrections to approved time count toward actuals.
-- Submitted/approved daily production, earned hours, task-specific completion and approved remaining-labor forecasts. Separate crew-capacity scenario calculator.
-- Role-filtered reports in XLSX, CSV and versioned integration JSON; print-to-PDF reports/POs; PDF and image evidence on inventory transactions, POs and time entries.
-- Password hashing, HTTP-only sessions, origin protection, login throttling, tenant-scoped records, role redaction, opt-in segregation of duties, idempotent writes, optimistic version checks, audit and revision history.
+- Projects, sections, task instructions, dependencies, equipment constraints, field/PM budgets, approved production, remaining-hour forecasts and reviewed schedule/baseline revisions.
+- Catalog aliases, trade/CSI/UNSPSC classification, accessories, barcode lookup and approved unit conversions. Reviewed CSV/XLSX/JSON imports retain source rows and reject stale reviews, unit errors and duplicates.
+- Shortage RFQs, quote price tiers and approval, multi-line POs, supplier promises, issued-order amendments, backorders, split shipments, returns, credit approvals and replacement provenance.
+- Receipts, quarantine/inspection, reservations, issue/install, transfers, reversals, approved damage/adjustments and individual serialized custody with warranties. Inventory is an immutable movement ledger.
+- Crew templates, worker shifts/breaks, holidays, leave, certifications, priority/allocation/roles, two-year date-range staffing and a weekly resource board. Equipment/dependency/capacity conflicts require a recorded manager justification.
+- Manual, bulk and timer-based time; worker review; PM approval; lock/correction workflows; job codes; check-ins and photo/PDF evidence. Only approved time and production change actuals and earned hours.
+- Calendar/material-constrained crew scenarios, modeled overtime cost and explicitly applied, reversible leveling suggestions. Scenarios do not reserve workers or change schedules.
+- In-app dispatch/acknowledgements backed by a durable event outbox, retries, consumer receipts and dead-letter monitoring.
+- Project grants and explicitly published viewer summaries. Supplier cost and payroll permissions are separate. Effective labor rates stay outside general worker records; payroll exports require explicit permission, confirmation and validated coded time.
+- Material, spend, reliability, availability, productivity, certification, warranty, exception and closeout reports in XLSX, CSV, JSON and server-generated PDF. Organization data export and previewed attachment retention.
+- HTTP-only sessions, hashed passwords, origin checks, login throttling, tenant isolation, optional separation of duties, idempotent transactions, optimistic versions, audit and recovery.
 
-## First release boundaries
+## Standalone scope
 
-This is a working **0.1 pilot release**, not completion of every advanced requirement in the original product concept. See [scope and acceptance](docs/ACCEPTANCE.md) for exact coverage.
+Version **0.2** implements the standalone workflows in the tracking brief. See [acceptance and operational limits](docs/ACCEPTANCE.md) and [release evidence](docs/RELEASE.md).
 
-No subscription billing, payroll integration, GPS tracking, automatic vendor email, live Bidlark integration, notification delivery, offline synchronization, barcode scanning, automatic resource leveling, or public customer signup is enabled. Supplier documents and cost are restricted to administrators/purchasing. The PM/foreman roles are organization-wide; project-by-project membership restrictions are not yet implemented. This version keeps payroll and customer sell-price data out of the application entirely.
+This edition is an MIT-licensed, single-server application. All modules are included; it has no subscription billing, SSO or public multi-tenant signup. A later Bidlark adapter will supply its own tenant identity and commercial entitlements. Live Bidlark/Gantt synchronization, external email/SMS delivery and optional offline synchronization are outside this standalone release. No GPS, automatic payroll transmission, tax calculation or supplier-email automation is enabled.
 
-A self-hosted installation uses one initial organization. Storage and authorization are tenant-scoped for future integration; there is no multi-tenant SaaS onboarding UI. SQLite is intended for a small-team single-server deployment. Multiple application replicas and high-volume commercial SaaS need an additional deployment and concurrency review.
+Scanning accepts exact barcode/QR values from keyboard-compatible scanners or pasted codes. PDF/CSV/XLSX reports are downloadable; payroll gross is a rate-based export, not a payroll processor. Readiness still requires accepted, allocated stock. Scenario dates are conditional on recorded constraints and do not guarantee future crew availability.
 
-The public demo is read-only with fictionalized/sample records and cannot accept customer or employee information. Writable use is available on your own installation.
+Each installation starts with one organization. Storage and authorization remain tenant-scoped. SQLite targets a small-team single-server deployment; multiple replicas require a different deployment/database design.
+
+The public demo is read-only and contains synthetic records. Install your own copy for writable use.
+
+## Upgrade from 0.1
+
+Back up the database before updating. Migration 2 adds project grants, isolated rates and the event outbox without rewriting operational history. **Non-admin accounts need explicit project grants after upgrade** (worker accounts also inherit access from their assignments). Use Operations center → Access & data. Viewer accounts see nothing until a manager/admin publishes a project summary. Payroll remains disabled until an administrator explicitly grants it, including to themselves. Existing quote records can enter the new approval workflow.
 
 ## Configuration and recovery
 

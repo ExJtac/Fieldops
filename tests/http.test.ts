@@ -124,6 +124,21 @@ test("authenticated HTTP lifecycle, scoped exports, attachment isolation and hos
       role: "viewer",
     });
     assert.equal(r.status, 200);
+    const account = (await r.json()) as any;
+    assert.equal(
+      (
+        await request("/api/v1/operations/grants", {
+          userId: account.id,
+          projectIds: [p.id],
+          payroll: false,
+        })
+      ).status,
+      200,
+    );
+    assert.equal(
+      (await request("/api/v1/operations/publish", { projectId: p.id })).status,
+      200,
+    );
     await request("/api/logout", {});
     assert.equal((await request("/api/v1/workspace")).status, 401);
     r = await request("/api/login", {
@@ -288,6 +303,170 @@ test("bulk crew time is atomic and password change revokes sessions", async () =
   } finally {
     server.closeAllConnections();
     await new Promise<void>((resolve) => server.close(() => resolve()));
+    store.close();
+  }
+});
+
+test("advanced HTTP routes enforce grants, payroll permission, retention preview and downloadable reports", async () => {
+  const store = new Store(":memory:"),
+    server = createApp(store).listen(0, "127.0.0.1");
+  await new Promise<void>((r) => server.once("listening", r));
+  const url = "http://127.0.0.1:" + (server.address() as any).port;
+  let cookie = "";
+  const request = (path: string, body?: any) =>
+    fetch(url + path, {
+      method: body === undefined ? "GET" : "POST",
+      headers: {
+        Cookie: cookie,
+        "Content-Type": "application/json",
+        "Idempotency-Key": randomUUID(),
+      },
+      body: body === undefined ? undefined : JSON.stringify(body),
+    });
+  try {
+    let r = await request("/api/setup", {
+      organization: "QA",
+      email: "admin@test.invalid",
+      name: "Admin",
+      password: "Test-only-password-long",
+      demo: true,
+    });
+    cookie = r.headers.get("set-cookie")!.split(";")[0];
+    const ws = (await (await request("/api/v1/workspace")).json()) as any,
+      actor = ws.actor,
+      p = ws.data.project[0],
+      po = ws.data.po[0];
+    assert.ok(
+      ((await (await request("/api/v1/operations")).json()) as any).events
+        .length > 0,
+    );
+    r = await request("/api/v1/records/shipment", {
+      projectId: p.id,
+      poId: po.id,
+      reference: "HTTP split 1",
+      lines: [{ lineId: po.lines[0].id, quantity: 10 }],
+    });
+    assert.equal(r.status, 200);
+    const shipment = (await r.json()) as any;
+    r = await request(`/api/v1/records/shipment/${shipment.id}/transition`, {
+      version: 1,
+      status: "Shipped",
+    });
+    assert.equal(r.status, 200);
+    assert.equal(
+      (
+        await request("/api/v1/operations/rate", {
+          workerId: ws.data.worker[0].id,
+          effective: "2026-01-01",
+          rate: 1,
+          overtimeMultiplier: 1.5,
+          currency: "USD",
+        })
+      ).status,
+      403,
+    );
+    const bytes = Buffer.from("%PDF-1.4 QA old attachment");
+    store.db
+      .prepare("INSERT INTO attachments VALUES(?,?,?,?,?,?,?,?,?)")
+      .run(
+        "old-file",
+        actor.org,
+        "po",
+        po.id,
+        "old.pdf",
+        "application/pdf",
+        bytes,
+        "2020-01-01T00:00:00Z",
+        actor.id,
+      );
+    const preview = (await (
+      await request("/api/v1/retention/preview", { days: 365 })
+    ).json()) as any;
+    assert.equal(preview.attachments.length, 1);
+    assert.equal(
+      (
+        await request("/api/v1/retention/apply", {
+          days: 365,
+          token: "stale",
+          confirm: "DELETE ATTACHMENTS",
+        })
+      ).status,
+      409,
+    );
+    assert.equal((await request("/api/v1/attachments/old-file")).status, 200);
+    assert.equal(
+      (
+        await request("/api/v1/retention/apply", {
+          days: 365,
+          token: preview.token,
+          confirm: "DELETE ATTACHMENTS",
+        })
+      ).status,
+      200,
+    );
+    assert.equal((await request("/api/v1/attachments/old-file")).status, 404);
+    assert.ok(store.auditList(actor.org).length);
+    r = await request(
+      "/api/v1/analytics/pdf?projectId=" + p.id + "&table=Deliveries",
+    );
+    assert.equal(r.status, 200);
+    assert.equal(
+      Buffer.from(await r.arrayBuffer())
+        .subarray(0, 5)
+        .toString(),
+      "%PDF-",
+    );
+    r = await request("/api/v1/organization/export");
+    assert.equal(r.status, 200);
+    const exported = (await r.json()) as any;
+    assert.equal(exported.schemaVersion, 2);
+    assert.ok(exported.revisions.length);
+    assert.equal(exported.users, undefined);
+    r = await request("/api/v1/users", {
+      name: "Scoped PM",
+      email: "pm@test.invalid",
+      password: "Test-only-password-long",
+      role: "pm",
+    });
+    const pm = (await r.json()) as any;
+    await request("/api/v1/operations/grants", {
+      userId: pm.id,
+      projectIds: [p.id],
+      payroll: false,
+    });
+    await request("/api/logout", {});
+    r = await request("/api/login", {
+      email: "pm@test.invalid",
+      password: "Test-only-password-long",
+    });
+    cookie = r.headers.get("set-cookie")!.split(";")[0];
+    assert.equal((await request("/api/v1/timeline/po/" + po.id)).status, 403);
+    assert.equal((await request("/api/v1/organization/export")).status, 403);
+    assert.equal(
+      (
+        await request("/api/v1/operations/grants", {
+          userId: pm.id,
+          projectIds: [],
+          payroll: true,
+        })
+      ).status,
+      403,
+    );
+    const pmReport = (await (
+      await request("/api/v1/analytics/view")
+    ).json()) as any;
+    assert.equal(pmReport.tables.Spend, undefined);
+    assert.equal(
+      (
+        await request(
+          "/api/v1/analytics/view?projectId=" + ws.data.project[1].id,
+        )
+      ).status,
+      403,
+    );
+  } finally {
+    server.closeAllConnections();
+    await new Promise<void>((r) => server.close(() => r()));
     store.close();
   }
 });

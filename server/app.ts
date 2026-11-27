@@ -1,4 +1,6 @@
 import express from "express";
+import { advancedRoutes } from "./advanced-routes.js";
+import { Advanced } from "./advanced.js";
 import helmet from "helmet";
 import { rateLimit } from "express-rate-limit";
 import { randomBytes, randomUUID } from "node:crypto";
@@ -55,7 +57,7 @@ export function createApp(store: Store) {
     }
     next();
   });
-  app.get("/api/health", (_q, r) => r.json({ ok: true, version: "0.1.0" }));
+  app.get("/api/health", (_q, r) => r.json({ ok: true, version: "0.2.0" }));
   app.use("/api", (q, _r, next) => {
     if (readOnly && !["GET", "HEAD"].includes(q.method))
       return next(
@@ -197,7 +199,24 @@ export function createApp(store: Store) {
   });
   app.post("/api/v1/records/:kind/:id/transition", (q, r) =>
     write(q, r, () =>
-      ops.transition(r.locals.actor, q.params.kind, q.params.id, q.body),
+      [
+        "shipment",
+        "notice",
+        "quote",
+        "conversion",
+        "poAmendment",
+        "credit",
+        "adjustment",
+        "scheduleRevision",
+        "productionCorrection",
+      ].includes(q.params.kind)
+        ? new Advanced(ops).transition(
+            r.locals.actor,
+            q.params.kind,
+            q.params.id,
+            q.body,
+          )
+        : ops.transition(r.locals.actor, q.params.kind, q.params.id, q.body),
     ),
   );
   app.post("/api/v1/inventory/movements", (q, r) =>
@@ -219,6 +238,7 @@ export function createApp(store: Store) {
   app.post("/api/v1/assignments/:id/cancel", (q, r) =>
     write(q, r, () => {
       ops.allowed(r.locals.actor, "assignment");
+      ops.ref(r.locals.actor, "assignment", q.params.id);
       return store.update(
         r.locals.actor,
         "assignment",
@@ -278,10 +298,16 @@ export function createApp(store: Store) {
   function attachmentAccess(a: Actor, kind: string, id: string) {
     const r = ops.ref(a, kind, id);
     requireThat(
-      !["viewer", "worker"].includes(a.role),
+      a.role !== "viewer",
       "Attachments are restricted to operations staff",
       403,
     );
+    if (a.role === "worker")
+      requireThat(
+        kind === "time" && r.workerId === a.workerId,
+        "Only your own time evidence is available",
+        403,
+      );
     if (["quote", "po", "supplier", "rfq"].includes(kind))
       requireThat(
         ["admin", "purchasing"].includes(a.role),
@@ -522,6 +548,7 @@ export function createApp(store: Store) {
       );
     }),
   );
+  advancedRoutes(app, ops);
   app.get("/api/v1/reports/:format", async (q, r) => {
     const a = r.locals.actor as Actor,
       s = ops.snapshot(a);

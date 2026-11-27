@@ -31,6 +31,7 @@ import {
   FolderKanban,
   RefreshCw,
 } from "lucide-react";
+import { Workflows, ProcurementBoard } from "./workflows";
 import { forms, type Field } from "./forms";
 import "@fontsource/dm-sans/400.css";
 import "@fontsource/dm-sans/500.css";
@@ -69,6 +70,7 @@ const nav = [
   ["production", "Daily production", ClipboardCheck],
   ["forecasts", "Forecasts", ChartNoAxesCombined],
   ["reports", "Reports & audit", FileChartColumn],
+  ["workflows", "Operations center", FolderKanban],
   ["settings", "Workspace", Settings],
 ] as const;
 async function api(path: string, body?: any, method = "POST") {
@@ -122,6 +124,13 @@ function Empty({
   );
 }
 function App() {
+  const [materialFilters, setMaterialFilters] = useState<Row>({
+    section: "",
+    supplier: "",
+    po: "",
+    risk: "",
+    needBy: "",
+  });
   const [setup, setSetup] = useState<boolean | null>(null),
     [ws, setWs] = useState<Row | null>(null),
     [error, setError] = useState(""),
@@ -357,7 +366,7 @@ function App() {
               actor.role === "viewer"
                 ? ["overview", "reports"].includes(k)
                 : actor.role === "worker"
-                  ? ["overview", "assignments", "time"].includes(k)
+                  ? ["overview", "assignments", "time", "workflows"].includes(k)
                   : true,
             )
             .map(([id, name, Icon], i) => (
@@ -398,6 +407,7 @@ function App() {
               <small>{actor.role}</small>
             </span>
             <button
+              disabled={ws.readOnly}
               aria-label="Sign out"
               onClick={() =>
                 action(async () => {
@@ -498,6 +508,19 @@ function App() {
                 <X size={16} />
               </button>
             </div>
+          )}
+          {view === "workflows" && (
+            <Workflows
+              ws={ws}
+              project={project}
+              open={open}
+              showEvidence={(kind: string, r: Row) =>
+                setDetail({ ...r, _kind: kind })
+              }
+              action={action}
+              api={api}
+              refresh={refresh}
+            />
           )}
           {view === "overview" && (
             <>
@@ -752,6 +775,63 @@ function App() {
                   )}
                 </div>
               </div>
+              <div className="material-filters">
+                {["section", "supplier", "po", "risk"].map((key) => (
+                  <label key={key}>
+                    {
+                      (
+                        {
+                          section: "Section",
+                          supplier: "Supplier",
+                          po: "PO",
+                          risk: "Risk",
+                        } as Row
+                      )[key]
+                    }
+                    <select
+                      value={materialFilters[key]}
+                      onChange={(e) =>
+                        setMaterialFilters((v) => ({
+                          ...v,
+                          [key]: e.target.value,
+                        }))
+                      }
+                    >
+                      <option value="">All</option>
+                      {(key === "section"
+                        ? [
+                            ...new Set(scoped("task").map((t) => t.section)),
+                          ].map((s) => ({ id: s, name: s }))
+                        : key === "risk"
+                          ? [
+                              "Ready",
+                              "Late delivery",
+                              "Awaiting delivery",
+                              "ETA unconfirmed",
+                            ].map((s) => ({ id: s, name: s }))
+                          : rows(key)
+                      ).map((r: Row) => (
+                        <option value={r.id} key={r.id}>
+                          {r.name || r.number}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                ))}
+                <label>
+                  Needed by
+                  <input
+                    type="date"
+                    value={materialFilters.needBy}
+                    onChange={(e) =>
+                      setMaterialFilters((v) => ({
+                        ...v,
+                        needBy: e.target.value,
+                      }))
+                    }
+                  />
+                </label>
+              </div>
               <section className="panel">
                 {table(
                   [
@@ -761,16 +841,44 @@ function App() {
                     "Covered",
                     "Shortage",
                     "Need by",
+                    "Project ordered / received",
+                    "Supplier / PO / ETA",
+                    ...(cost ? ["Unit prices"] : []),
                     "Risk",
                     "",
                   ],
                   filtered(
                     readies.flatMap((r: Row) =>
-                      (r.lines || []).map((l: Row) => ({
-                        ...l,
-                        taskName: r.name,
-                        section: r.section,
-                      })),
+                      (r.lines || [])
+                        .map((l: Row) => ({
+                          ...l,
+                          taskName: r.name,
+                          section: r.section,
+                          orders: rows("po").filter(
+                            (p) =>
+                              p.projectId === l.projectId &&
+                              p.lines.some((x: Row) => x.partId === l.partId),
+                          ),
+                        }))
+                        .filter(
+                          (l: Row) =>
+                            (!materialFilters.section ||
+                              l.section === materialFilters.section) &&
+                            (!materialFilters.risk ||
+                              l.risk === materialFilters.risk) &&
+                            (!materialFilters.needBy ||
+                              (l.needBy &&
+                                l.needBy <= materialFilters.needBy)) &&
+                            (!materialFilters.supplier ||
+                              l.orders.some(
+                                (p: Row) =>
+                                  p.supplierId === materialFilters.supplier,
+                              )) &&
+                            (!materialFilters.po ||
+                              l.orders.some(
+                                (p: Row) => p.id === materialFilters.po,
+                              )),
+                        ),
                     ),
                   ),
                   (r) => (
@@ -791,6 +899,51 @@ function App() {
                         {number(r.shortage)}
                       </td>
                       <td>{r.needBy || "Unscheduled"}</td>
+                      <td>
+                        {number(
+                          r.orders
+                            .filter((p: Row) =>
+                              ["Issued", "Acknowledged"].includes(p.status),
+                            )
+                            .flatMap((p: Row) =>
+                              p.lines.filter((l: Row) => l.partId === r.partId),
+                            )
+                            .reduce((n: number, l: Row) => n + l.quantity, 0),
+                        )}{" "}
+                        /{" "}
+                        {number(
+                          rows("movement")
+                            .filter(
+                              (m) =>
+                                m.projectId === r.projectId &&
+                                m.partId === r.partId,
+                            )
+                            .reduce((n, m) => n + (m.received || 0), 0),
+                        )}
+                      </td>
+                      <td>
+                        {r.orders.map((p: Row) => (
+                          <small key={p.id}>
+                            {label("supplier", p.supplierId)} · {p.number} ·{" "}
+                            {p.lines
+                              .filter((l: Row) => l.partId === r.partId)
+                              .map((l: Row) => l.confirmedETA || "Unconfirmed")
+                              .join(", ")}
+                          </small>
+                        ))}
+                      </td>
+                      {cost && (
+                        <td>
+                          {r.orders.map((p: Row) => (
+                            <small key={p.id}>
+                              {p.lines
+                                .filter((l: Row) => l.partId === r.partId)
+                                .map((l: Row) => money(l.unitCost, p.currency))
+                                .join(", ")}
+                            </small>
+                          ))}
+                        </td>
+                      )}
                       <td>
                         <Badge>{r.risk}</Badge>
                       </td>
@@ -813,7 +966,7 @@ function App() {
                     <h2>Part catalog</h2>
                   </div>
                   {table(
-                    ["Part", "Manufacturer", "Unit"],
+                    ["Part", "Manufacturer", "Unit", "Classification", ""],
                     filtered(rows("part")),
                     (r) => (
                       <>
@@ -823,6 +976,15 @@ function App() {
                         </td>
                         <td>{r.manufacturer || "—"}</td>
                         <td>{r.unit}</td>
+                        <td>
+                          {r.trade} {r.csi} {r.unspsc}
+                          <small>
+                            {(r.accessoryIds || [])
+                              .map((id: string) => label("part", id))
+                              .join(", ")}
+                          </small>
+                        </td>
+                        <td>{purchase && edit("part", r)}</td>
                       </>
                     ),
                   )}
@@ -888,6 +1050,7 @@ function App() {
                   {cost ? "visible to your role" : "restricted for your role"}
                 </span>
               </div>
+              <ProcurementBoard data={data} project={project} />
               <section className="panel">
                 <div className="panel-head">
                   <h2>Purchase orders</h2>
@@ -1458,6 +1621,38 @@ function App() {
                           (a) => !project || a.projectId === project,
                         ),
                         hours = all.reduce((s, a) => s + a.hours, 0);
+                      const calendar = rows("calendar").find(
+                          (c) => c.workerId === w.id,
+                        ),
+                        p = lookup(
+                          "project",
+                          project ||
+                            items[0]?.projectId ||
+                            rows("project")[0]?.id,
+                        ),
+                        weekday = new Date(date + "T00:00:00Z").getUTCDay();
+                      const available =
+                        !w.active ||
+                        !(p?.workdays || [1, 2, 3, 4, 5]).includes(weekday) ||
+                        (calendar && !calendar.workdays.includes(weekday)) ||
+                        [
+                          ...(p?.holidays || []),
+                          ...(p?.closures || []),
+                          ...(calendar?.holidays || []),
+                        ].includes(date)
+                          ? 0
+                          : Math.max(
+                              0,
+                              (calendar
+                                ? calendar.shiftHours - calendar.unpaidBreak
+                                : w.dailyHours) -
+                                rows("leave")
+                                  .filter(
+                                    (l) =>
+                                      l.workerId === w.id && l.date === date,
+                                  )
+                                  .reduce((n, l) => n + l.hours, 0),
+                            );
                       return (
                         <div
                           key={i}
@@ -1516,10 +1711,10 @@ function App() {
                           ))}
                           <small
                             className={
-                              hours > w.dailyHours ? "danger-text" : "capacity"
+                              hours > available ? "danger-text" : "capacity"
                             }
                           >
-                            {hours ? `${number(hours)}h planned` : "—"}
+                            {`${number(hours)}h / ${number(available)}h available`}
                           </small>
                           {rows("leave")
                             .filter(
@@ -1792,7 +1987,10 @@ function App() {
                   ),
                 )}
               </section>
-              <Scenario />
+              <p className="message">
+                Use Operations center → Crew & schedule for material- and
+                calendar-aware crew scenarios.
+              </p>
               <div className="two-cols">
                 <section className="panel">
                   <div className="panel-head">
@@ -2127,7 +2325,7 @@ function App() {
               CAS FieldOps <b>·</b> Open source. On your terms.
             </span>
             <span>
-              v0.1.0 ·{" "}
+              v0.2.0 ·{" "}
               {actor.role === "admin" ? "Workspace administrator" : actor.role}
             </span>
           </footer>
@@ -2205,7 +2403,11 @@ function App() {
                 onSave={async (b) => {
                   let path = "/api/v1/records/" + modal.kind,
                     method = "POST";
-                  if (modal.kind === "movement")
+                  if (modal.kind.startsWith("op:"))
+                    path = "/api/v1/operations/" + modal.kind.slice(3);
+                  else if (modal.kind.startsWith("plan:"))
+                    path = "/api/v1/planning/" + modal.kind.slice(5);
+                  else if (modal.kind === "movement")
                     path = "/api/v1/inventory/movements";
                   else if (modal.kind === "promise")
                     path = "/api/v1/purchase-orders/" + b.poId + "/promises";
@@ -2303,13 +2505,15 @@ function App() {
                 ))}
               </div>
             )}
-            {detail._kind && !["viewer", "worker"].includes(actor.role) && (
-              <Evidence
-                kind={detail._kind}
-                id={detail.id}
-                readOnly={ws.readOnly}
-              />
-            )}
+            {detail._kind &&
+              actor.role !== "viewer" &&
+              (actor.role !== "worker" || detail._kind === "time") && (
+                <Evidence
+                  kind={detail._kind}
+                  id={detail.id}
+                  readOnly={ws.readOnly}
+                />
+              )}
           </section>
         </div>
       )}
@@ -2470,6 +2674,7 @@ function RecordForm({
         type: "select",
         options: [
           "receive",
+          "inspect",
           "reserve",
           "release",
           "issue",
@@ -2506,7 +2711,23 @@ function RecordForm({
         ref: "location",
       },
       { key: "referenceId", label: "Original movement ID" },
-      { key: "serial", label: "Lot / serial reference" },
+      {
+        key: "serial",
+        label: "Lot reference (register unique serials in Operations center)",
+      },
+      {
+        key: "condition",
+        label: "Receipt / return condition",
+        type: "select",
+        options: ["Good", "Damaged", "Quarantine"],
+        default: "Good",
+      },
+      {
+        key: "shipmentId",
+        label: "Split shipment",
+        type: "select",
+        ref: "shipment",
+      },
       {
         key: "note",
         label: "Receiving evidence / movement reason",
@@ -2568,13 +2789,141 @@ function RecordForm({
             }),
           )
         : data[f.ref || ""] || [];
-    if (["task", "po"].includes(f.ref || ""))
+    if (
+      [
+        "task",
+        "po",
+        "equipment",
+        "costCode",
+        "shipment",
+        "production",
+        "change",
+      ].includes(f.ref || "")
+    )
       items = items.filter(
         (r) => !values.projectId || r.projectId === values.projectId,
       );
     return items;
   }
-  const input = (f: Field) => {
+  const input = (f: Field): ReactNode => {
+    if (f.type === "rows")
+      return (
+        <div className="repeat-fields">
+          {(values[f.key] || []).map((row: Row, i: number) => (
+            <div className="repeat-row" key={i}>
+              {f.fields?.map((child) => (
+                <label key={child.key}>
+                  {child.label}
+                  {child.type === "select" ? (
+                    <select
+                      required={child.required}
+                      value={row[child.key] || ""}
+                      onChange={(e) =>
+                        set(
+                          f.key,
+                          values[f.key].map((x: Row, j: number) =>
+                            j === i ? { ...x, [child.key]: e.target.value } : x,
+                          ),
+                        )
+                      }
+                    >
+                      <option value="">Choose…</option>
+                      {options(child).map((o) => (
+                        <option key={o.id} value={o.id}>
+                          {o.name || o.number || o.partNumber || o.code || o.id}
+                        </option>
+                      ))}
+                    </select>
+                  ) : (
+                    <input
+                      type={child.type || "text"}
+                      required={child.required}
+                      step="any"
+                      value={row[child.key] ?? ""}
+                      onChange={(e) =>
+                        set(
+                          f.key,
+                          values[f.key].map((x: Row, j: number) =>
+                            j === i
+                              ? {
+                                  ...x,
+                                  [child.key]:
+                                    child.type === "number"
+                                      ? Number(e.target.value)
+                                      : e.target.value,
+                                }
+                              : x,
+                          ),
+                        )
+                      }
+                    />
+                  )}
+                </label>
+              ))}
+              <button
+                type="button"
+                onClick={() =>
+                  set(
+                    f.key,
+                    values[f.key].filter((_: Row, j: number) => j !== i),
+                  )
+                }
+              >
+                Remove row
+              </button>
+            </div>
+          ))}
+          <button
+            type="button"
+            onClick={() =>
+              set(f.key, [
+                ...(values[f.key] || []),
+                Object.fromEntries(
+                  (f.fields || []).map((c) => [c.key, c.default ?? ""]),
+                ),
+              ])
+            }
+          >
+            Add row
+          </button>
+        </div>
+      );
+    if (f.type === "multi" || f.type === "days") {
+      const choices =
+        f.type === "days"
+          ? [
+              "Sunday",
+              "Monday",
+              "Tuesday",
+              "Wednesday",
+              "Thursday",
+              "Friday",
+              "Saturday",
+            ].map((name, id) => ({ id, name }))
+          : options(f);
+      return (
+        <div className="multi-options">
+          {choices.map((o: any) => (
+            <label className="check-label" key={o.id}>
+              <input
+                type="checkbox"
+                checked={(values[f.key] || []).includes(o.id)}
+                onChange={(e) =>
+                  set(
+                    f.key,
+                    e.target.checked
+                      ? [...(values[f.key] || []), o.id]
+                      : (values[f.key] || []).filter((v: any) => v !== o.id),
+                  )
+                }
+              />
+              {o.name || o.description || o.number || o.id}
+            </label>
+          ))}
+        </div>
+      );
+    }
+
     const v = values[f.key] ?? "",
       common = {
         id: "field-" + f.key,
@@ -2597,7 +2946,18 @@ function RecordForm({
             ? f.options.map((o) => <option key={o}>{o}</option>)
             : options(f).map((o) => (
                 <option key={o.id} value={o.id}>
-                  {o.name || o.number || o.partNumber + " · " + o.description}
+                  {o.name ||
+                    o.number ||
+                    o.code ||
+                    (o.partNumber
+                      ? o.partNumber + " · " + o.description
+                      : o.action
+                        ? o.action +
+                          " · " +
+                          o.quantity +
+                          " · " +
+                          o.createdAt.slice(0, 10)
+                        : o.id)}
                 </option>
               ))}
         </select>
@@ -2629,16 +2989,24 @@ function RecordForm({
     return (
       <input
         {...common}
-        type={f.type === "list" ? "text" : f.type || "text"}
+        type={
+          f.type === "list"
+            ? "text"
+            : ["signed", "optionalNumber"].includes(f.type || "")
+              ? "number"
+              : f.type || "text"
+        }
         step={f.type === "number" ? "any" : undefined}
         min={f.type === "number" ? 0 : undefined}
         value={Array.isArray(v) ? v.join(", ") : v}
         onChange={(e) =>
           set(
             f.key,
-            f.type === "number"
+            ["number", "signed", "optionalNumber"].includes(f.type || "")
               ? e.target.value === ""
-                ? ""
+                ? f.type === "optionalNumber"
+                  ? null
+                  : ""
                 : Number(e.target.value)
               : e.target.value,
           )
@@ -2651,7 +3019,7 @@ function RecordForm({
       kind !== "movement" ||
       !(
         (["poId", "lineId"].includes(f.key) &&
-          !["receive", "return"].includes(values.action)) ||
+          !["receive", "return", "inspect"].includes(values.action)) ||
         (["taskId"].includes(f.key) &&
           !["reserve", "release", "issue", "install"].includes(
             values.action,
@@ -2688,7 +3056,7 @@ function RecordForm({
                       return { name, expires };
                     });
           }
-          if (kind === "po" || kind === "promise") b.lines = lines;
+          if (["po", "promise", "poAmendment"].includes(kind)) b.lines = lines;
           if (kind === "user" && !b.workerId) delete b.workerId;
           if (kind === "movement" && b.action === "reverse") {
             b.quantity = modal.defaults?.quantity;
@@ -2705,7 +3073,9 @@ function RecordForm({
         {visible.map((f) => (
           <label
             className={
-              ["textarea", "skills"].includes(f.type || "")
+              ["textarea", "skills", "rows", "multi", "days"].includes(
+                f.type || "",
+              )
                 ? "span-2"
                 : f.type === "checkbox"
                   ? "check-label"
@@ -2732,7 +3102,7 @@ function RecordForm({
           </label>
         )}
       </div>
-      {(kind === "po" || kind === "promise") && (
+      {["po", "promise", "poAmendment"].includes(kind) && (
         <div className="po-lines">
           <h3>
             {kind === "promise"
@@ -2745,7 +3115,7 @@ function RecordForm({
                 Part
                 <select
                   required
-                  disabled={kind === "promise"}
+                  disabled={kind === "promise" || kind === "poAmendment"}
                   value={l.partId}
                   onChange={(e) =>
                     setLines((ls) =>
@@ -2812,7 +3182,7 @@ function RecordForm({
           ))}
           <button
             type="button"
-            disabled={kind === "promise"}
+            disabled={kind === "promise" || kind === "poAmendment"}
             onClick={() =>
               setLines((ls) => [
                 ...ls,
@@ -2860,6 +3230,30 @@ function RecordForm({
         <div className="message" role="status">
           {localError}
         </div>
+      )}
+      {kind === "plan:range" && (
+        <button
+          type="button"
+          onClick={async () => {
+            try {
+              const result = await api(
+                "/api/v1/planning/range-preview",
+                values,
+              );
+              setLocalError(
+                `${result.count} shifts; ${result.skipped.length} non-working days skipped. ${result.records.filter((r: Row) => r.conflicts.length).length} shifts have conflicts. ${result.records
+                  .filter((r: Row) => r.conflicts.length)
+                  .slice(0, 5)
+                  .map((r: Row) => r.date + ": " + r.conflicts.join("; "))
+                  .join(" | ")}`,
+              );
+            } catch (e: any) {
+              setLocalError(e.message);
+            }
+          }}
+        >
+          Preview range capacity
+        </button>
       )}
       <footer className="modal-actions">
         {onDelete && (
@@ -2984,6 +3378,8 @@ function ImportForm({
                       "quantity",
                       "taskId",
                       "source",
+                      "needBy",
+                      "conversionId",
                     ].map((k) => [k, k]),
                   ),
                 );
@@ -3009,6 +3405,8 @@ function ImportForm({
               "quantity",
               "taskId",
               "source",
+              "needBy",
+              "conversionId",
             ].map((k) => (
               <label key={k}>
                 {k}
@@ -3073,6 +3471,18 @@ function ImportForm({
         </div>
       )}
       <details>
+        <summary>Approved unit conversions</summary>
+        {(data.conversion || [])
+          .filter((c: Row) => c.status === "Approved")
+          .map((c: Row) => (
+            <p key={c.id}>
+              {data.part.find((p: Row) => p.id === c.partId)?.partNumber}: 1{" "}
+              {c.fromUnit} = {c.factor} {c.toUnit}. Conversion ID:{" "}
+              <code>{c.id}</code>
+            </p>
+          ))}
+      </details>
+      <details>
         <summary>Task IDs for this project</summary>
         {(data.task || [])
           .filter((t: Row) => t.projectId === projectId)
@@ -3109,7 +3519,7 @@ function ImportForm({
                           {p.errors.join("; ")}
                         </span>
                       ) : p.existingId ? (
-                        `Revise ${p.previousQuantity} → ${p.row.quantity}`
+                        `Revise ${p.previousQuantity} → ${p.normalizedQuantity}`
                       ) : (
                         "New requirement"
                       )}
@@ -3146,7 +3556,13 @@ function ImportForm({
           onClick={async () => {
             setBusy(true);
             try {
-              await onSave({ projectId, rows, source, sourceVersion: version });
+              await onSave({
+                projectId,
+                rows,
+                source,
+                sourceVersion: version,
+                reviewTokens: preview.map((p) => p.reviewToken),
+              });
             } catch (e: any) {
               setError(e.message);
             } finally {
@@ -3158,104 +3574,6 @@ function ImportForm({
         </button>
       </div>
     </div>
-  );
-}
-function Scenario() {
-  const [crew, setCrew] = useState(4),
-    [hours, setHours] = useState(8),
-    [remaining, setRemaining] = useState(160),
-    [saturday, setSaturday] = useState(false),
-    [rate, setRate] = useState(0);
-  const capacity = crew * hours,
-    days = capacity ? Math.ceil(remaining / capacity) : 0;
-  const weeks = days / (saturday ? 6 : 5);
-  return (
-    <section className="panel scenario">
-      <div className="panel-head">
-        <div>
-          <span className="eyebrow">WHAT IF / UNSAVED SCENARIO</span>
-          <h2>Try a different crew plan.</h2>
-          <p>
-            This calculator does not edit assignments, budgets, or baseline
-            dates.
-          </p>
-        </div>
-        <ChartNoAxesCombined size={30} />
-      </div>
-      <div className="scenario-grid">
-        <label>
-          Crew size
-          <input
-            type="number"
-            min={1}
-            max={100}
-            value={crew}
-            onChange={(e) => setCrew(Math.max(1, Number(e.target.value)))}
-          />
-        </label>
-        <label>
-          Hours / person / day
-          <input
-            type="number"
-            min={1}
-            max={16}
-            value={hours}
-            onChange={(e) =>
-              setHours(Math.min(16, Math.max(1, Number(e.target.value))))
-            }
-          />
-        </label>
-        <label>
-          Remaining field hours
-          <input
-            type="number"
-            min={0}
-            value={remaining}
-            onChange={(e) => setRemaining(Math.max(0, Number(e.target.value)))}
-          />
-        </label>
-        <label>
-          Scenario loaded hourly cost
-          <input
-            type="number"
-            min={0}
-            value={rate}
-            onChange={(e) => setRate(Math.max(0, Number(e.target.value)))}
-          />
-        </label>
-        <label className="check-label">
-          <input
-            type="checkbox"
-            checked={saturday}
-            onChange={(e) => setSaturday(e.target.checked)}
-          />
-          Work Saturdays
-        </label>
-      </div>
-      <div className="scenario-result">
-        <strong>
-          {capacity}
-          <small>field hours / day</small>
-        </strong>
-        <strong>
-          {days}
-          <small>working days</small>
-        </strong>
-        <strong>
-          {number(weeks)}
-          <small>working weeks</small>
-        </strong>
-        <strong>
-          {rate ? money(remaining * rate) : "—"}
-          <small>cost at entered blended rate</small>
-        </strong>
-      </div>
-      <p className="muted">
-        Capacity illustration only; holidays, site releases, material holds,
-        travel, and overtime premiums are not included. Enter a blended cost
-        that reflects your scenario.
-      </p>
-    </section>
   );
 }
 createRoot(document.getElementById("root")!).render(<App />);

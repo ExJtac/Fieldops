@@ -1,3 +1,4 @@
+import { seedExtensions } from "./seed-extensions.js";
 import { Operations } from "./domain.js";
 import { type Actor, requireThat } from "./store.js";
 export function seed(ops: Operations, a: Actor) {
@@ -215,6 +216,7 @@ export function seed(ops: Operations, a: Actor) {
     unit: "ea",
     notes: "Synthetic production awaiting review",
   });
+  seedExtensions(ops, a);
   return {
     projectId: project.id,
     otherProjectId: other.id,

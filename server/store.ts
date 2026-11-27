@@ -59,6 +59,11 @@ export class Store {
  CREATE TABLE IF NOT EXISTS migrations(version INTEGER PRIMARY KEY,applied_at TEXT NOT NULL);
  CREATE TABLE IF NOT EXISTS organizations(id TEXT PRIMARY KEY,name TEXT NOT NULL);
  CREATE TABLE IF NOT EXISTS users(id TEXT PRIMARY KEY,org TEXT NOT NULL REFERENCES organizations(id),email TEXT NOT NULL UNIQUE,name TEXT NOT NULL,password TEXT NOT NULL,role TEXT NOT NULL,worker_id TEXT,active INTEGER NOT NULL DEFAULT 1);
+ CREATE TABLE IF NOT EXISTS project_access(org TEXT NOT NULL,user_id TEXT NOT NULL,project_id TEXT NOT NULL,PRIMARY KEY(org,user_id,project_id));
+ CREATE TABLE IF NOT EXISTS financial_access(org TEXT NOT NULL,user_id TEXT NOT NULL,payroll INTEGER NOT NULL DEFAULT 0,PRIMARY KEY(org,user_id));
+ CREATE TABLE IF NOT EXISTS labor_rates(org TEXT NOT NULL,worker_id TEXT NOT NULL,effective TEXT NOT NULL,rate REAL NOT NULL CHECK(rate>=0),overtime_multiplier REAL NOT NULL CHECK(overtime_multiplier>=1),currency TEXT NOT NULL,PRIMARY KEY(org,worker_id,effective));
+ CREATE TABLE IF NOT EXISTS outbox(id TEXT PRIMARY KEY,org TEXT NOT NULL,actor TEXT NOT NULL,kind TEXT NOT NULL,entity TEXT NOT NULL,event_type TEXT NOT NULL,payload TEXT NOT NULL,state TEXT NOT NULL DEFAULT 'pending',attempts INTEGER NOT NULL DEFAULT 0,next_at INTEGER NOT NULL DEFAULT 0,error TEXT,created_at TEXT NOT NULL);
+ CREATE TABLE IF NOT EXISTS deliveries(event_id TEXT NOT NULL,consumer TEXT NOT NULL,processed_at TEXT NOT NULL,PRIMARY KEY(event_id,consumer));
  CREATE TABLE IF NOT EXISTS sessions(token TEXT PRIMARY KEY,user_id TEXT NOT NULL REFERENCES users(id),expires INTEGER NOT NULL);
  CREATE TABLE IF NOT EXISTS records(org TEXT NOT NULL REFERENCES organizations(id),kind TEXT NOT NULL,id TEXT NOT NULL,body TEXT NOT NULL CHECK(json_valid(body)),PRIMARY KEY(org,kind,id));
  CREATE INDEX IF NOT EXISTS record_project ON records(org,kind,json_extract(body,'$.projectId'));
@@ -72,6 +77,7 @@ export class Store {
  CREATE TRIGGER IF NOT EXISTS ledger_no_update BEFORE UPDATE ON records WHEN OLD.kind='movement' BEGIN SELECT RAISE(ABORT,'Inventory ledger is append-only'); END;
  CREATE TRIGGER IF NOT EXISTS ledger_no_delete BEFORE DELETE ON records WHEN OLD.kind='movement' BEGIN SELECT RAISE(ABORT,'Inventory ledger is append-only'); END;
  INSERT OR IGNORE INTO migrations VALUES(1,datetime('now'));
+ INSERT OR IGNORE INTO migrations VALUES(2,datetime('now'));
  `);
   }
   tx<T>(fn: () => T): T {
@@ -118,6 +124,7 @@ export class Store {
       .prepare("INSERT INTO revisions VALUES(?,?,?,?,?)")
       .run(a.org, kind, id, 1, JSON.stringify(r));
     this.audit(a, kind + ".created", id, { version: 1 });
+    this.event(a, kind, r, "created");
     return r;
   }
   update(a: Actor, kind: string, id: string, body: any, version: number) {
@@ -150,7 +157,32 @@ export class Store {
       toVersion: r.version,
       fields: Object.keys(body),
     });
+    this.event(a, kind, r, "updated");
     return r;
+  }
+  event(a: Actor, kind: string, r: RecordData, action: string) {
+    if (["notice", "eventStatus"].includes(kind)) return;
+    this.db
+      .prepare(
+        "INSERT INTO outbox(id,org,actor,kind,entity,event_type,payload,created_at) VALUES(?,?,?,?,?,?,?,?)",
+      )
+      .run(
+        randomUUID(),
+        a.org,
+        a.id,
+        kind,
+        r.id,
+        kind + "." + action,
+        JSON.stringify({
+          projectId: r.projectId || null,
+          workerId: r.workerId || null,
+          version: r.version,
+          status: r.status || null,
+          date: r.date || null,
+          hours: r.hours || null,
+        }),
+        new Date().toISOString(),
+      );
   }
   audit(a: Actor, action: string, entity: string, detail: any = {}) {
     this.db

@@ -1,4 +1,5 @@
 export type Field = {
+  fields?: Field[];
   key: string;
   label: string;
   type?: string;
@@ -301,3 +302,347 @@ forms.crewAssignment = {
     f("crew", "Crew name (exact)", "text", { required: true }),
   ],
 };
+const ref = (key: string, label: string, kind: string, required = true) =>
+  f(key, label, "select", { ref: kind, required });
+const num = (key: string, label: string, value = 0) =>
+  f(key, label, "number", { default: value, required: true });
+const day = (key: string, label: string) => f(key, label, "date");
+const reason = f("reason", "Reason", "textarea", { required: true });
+const multi = (key: string, label: string, kind: string) =>
+  f(key, label, "multi", { ref: kind, default: [] });
+const repeat = (key: string, label: string, fields: Field[]) => ({
+  ...f(key, label, "rows", { default: [] }),
+  fields,
+});
+forms.project.fields.push(
+  num("stagingDays", "Delivery staging buffer (days)", 2),
+  f("closures", "Site closures (dates, comma-separated)", "list"),
+  f("workdays", "Working weekdays (0 Sunday – 6 Saturday)", "days", {
+    default: [1, 2, 3, 4, 5],
+  }),
+);
+forms.task.fields.push(
+  f("materialRequired", "Material requirements must be verified", "checkbox", {
+    default: true,
+  }),
+  f(
+    "allocatedHours",
+    "Explicit task budget hours (blank = unallocated)",
+    "optionalNumber",
+    { default: null },
+  ),
+  multi("dependencies", "Finish-to-start dependencies", "task"),
+  multi("equipmentIds", "Required equipment", "equipment"),
+  f("permits", "Permits and access instructions", "textarea"),
+  f("instructions", "Work package instructions", "textarea"),
+  num("priority", "Priority (1 highest – 5 lowest)", 3),
+  ref("changeId", "Related change", "change", false),
+);
+forms.part.fields.push(
+  f("trade", "Trade"),
+  f("csi", "CSI classification"),
+  f("unspsc", "UNSPSC classification"),
+  f("barcode", "Barcode / QR value"),
+  multi("accessoryIds", "Accessories", "part"),
+);
+forms.worker.fields.push(
+  f("region", "Coarse region / service area"),
+  f("supervisor", "Supervisor"),
+  f("vendorReference", "Contractor vendor reference"),
+  f("employmentReference", "Employment reference"),
+  f("qualifications", "Qualification notes", "textarea"),
+);
+forms.requirement.fields.push(
+  ref("changeId", "Related change", "change", false),
+  f("criticality", "Criticality", "select", {
+    options: ["normal", "critical"],
+    default: "normal",
+  }),
+);
+forms.quote.fields.push(
+  ref("rfqId", "Source RFQ", "rfq", false),
+  day("requestDate", "Request date"),
+  day("responseDate", "Response date"),
+  f("originalText", "Original supplier wording", "textarea"),
+  repeat("tiers", "Quantity price breaks", [
+    num("minimum", "Minimum quantity", 1),
+    num("unitCost", "Unit price"),
+  ]),
+);
+forms.po.fields.push(
+  f("source", "Order source"),
+  f("externalReference", "External PO reference"),
+  ref("replacesPoId", "Replaces PO", "po", false),
+  ref("receivingLocationId", "Receiving location", "location", false),
+);
+forms.assignment.fields.push(
+  f("role", "Crew role"),
+  num("priority", "Priority (1–5)", 3),
+  num("allocation", "Allocation percentage", 100),
+);
+forms.time.fields.push(ref("costCodeId", "Job cost code", "costCode", false));
+for (const kind of ["hold", "reforecast"])
+  forms[kind].fields.push(ref("changeId", "Related change", "change", false));
+Object.assign(forms, {
+  conversion: {
+    title: "Propose a unit conversion",
+    fields: [
+      part,
+      f("fromUnit", "Source unit", "text", { required: true }),
+      f("toUnit", "Catalog unit", "text", { required: true }),
+      num("factor", "Catalog units per source unit", 1),
+      reason,
+    ],
+  },
+  poAmendment: {
+    title: "Propose an issued PO amendment",
+    fields: [
+      reason,
+      num("freight", "Revised freight"),
+      num("tax", "Revised tax"),
+    ],
+  },
+  credit: {
+    title: "Return credit",
+    fields: [
+      project,
+      ref("poId", "Purchase order", "po"),
+      ref("returnMovementId", "Returned movement", "movement"),
+      num("amount", "Credit amount"),
+      f("reference", "Supplier credit reference", "text", { required: true }),
+      reason,
+    ],
+  },
+  shipment: {
+    title: "Split shipment",
+    fields: [
+      project,
+      ref("poId", "Purchase order", "po"),
+      f("reference", "Shipment reference", "text", { required: true }),
+      f("carrier", "Carrier"),
+      f("tracking", "Tracking reference"),
+      day("expectedDate", "Expected arrival"),
+      repeat("lines", "Shipment lines", [
+        ref("lineId", "PO line", "poLine"),
+        num("quantity", "Quantity", 1),
+      ]),
+      note,
+    ],
+  },
+  asset: {
+    title: "Register a serialized unit",
+    fields: [
+      project,
+      part,
+      ref("receiptId", "Receipt", "movement"),
+      f("serial", "Serial number", "text", { required: true }),
+      day("warrantyUntil", "Warranty through"),
+      f("manufacturer", "Manufacturer"),
+      note,
+    ],
+  },
+  adjustment: {
+    title: "Propose inventory adjustment",
+    fields: [
+      project,
+      part,
+      ref("assetId", "Specific serialized asset (damage only)", "asset", false),
+      ref("locationId", "Location", "location"),
+      f("action", "Action", "select", {
+        options: ["adjust", "damage"],
+        default: "adjust",
+      }),
+      f("quantity", "Signed quantity (negative removes stock)", "signed", {
+        default: -1,
+        required: true,
+      }),
+      reason,
+    ],
+  },
+  calendar: {
+    title: "Worker calendar",
+    fields: [
+      worker,
+      f("workdays", "Working weekdays", "days", { default: [1, 2, 3, 4, 5] }),
+      num("shiftStart", "Shift start hour", 7),
+      num("shiftHours", "Shift window (including break)", 9),
+      num("unpaidBreak", "Unpaid break hours", 1),
+      num("weeklyLimit", "Weekly regular-hour limit", 40),
+      f("overtimeAllowed", "Overtime authorized", "checkbox"),
+      f("holidays", "Holidays (dates, comma-separated)", "list"),
+    ],
+  },
+  crewTemplate: {
+    title: "Crew template",
+    fields: [
+      f("name", "Template name", "text", { required: true }),
+      f("trade", "Trade", "text", { required: true }),
+      num("size", "Crew size", 4),
+      repeat("roles", "Crew roles", [
+        f("role", "Role", "text", { required: true }),
+        num("count", "Count", 1),
+        f("skill", "Required certification"),
+      ]),
+      note,
+    ],
+  },
+  equipment: {
+    title: "Equipment availability",
+    fields: [
+      project,
+      f("name", "Equipment", "text", { required: true }),
+      day("availableFrom", "Available from"),
+      day("availableUntil", "Available through"),
+      note,
+    ],
+  },
+  costCode: {
+    title: "Job cost code",
+    fields: [
+      project,
+      f("code", "Cost code", "text", { required: true }),
+      f("description", "Description", "text", { required: true }),
+      f("laborType", "Labor budget", "select", {
+        options: ["field", "pm"],
+        default: "field",
+      }),
+    ],
+  },
+  checkin: {
+    title: "Daily check-in",
+    fields: [
+      project,
+      task,
+      worker,
+      day("date", "Date"),
+      f("status", "Attendance", "select", {
+        options: ["Present", "Absent", "Delayed"],
+        default: "Present",
+      }),
+      note,
+    ],
+  },
+  scheduleRevision: {
+    title: "Propose a schedule revision",
+    fields: [
+      project,
+      f("mode", "Revision type", "select", {
+        options: ["forecast", "baseline"],
+        default: "forecast",
+      }),
+      f("name", "Revision name", "text", { required: true }),
+      reason,
+      ref("changeId", "Related change", "change", false),
+      repeat("dates", "Revised forecast dates", [
+        task,
+        day("start", "Forecast start"),
+        day("finish", "Forecast finish"),
+      ]),
+    ],
+  },
+  productionCorrection: {
+    title: "Correct approved production",
+    fields: [
+      project,
+      ref("productionId", "Approved production", "production"),
+      num("quantity", "Corrected total quantity"),
+      reason,
+    ],
+  },
+  "op:assetMove": {
+    title: "Serialized custody movement",
+    fields: [
+      f("action", "Movement", "select", {
+        options: [
+          "reserve",
+          "release",
+          "issue",
+          "install",
+          "return",
+          "transfer",
+        ],
+        default: "reserve",
+      }),
+      project,
+      { ...task, required: false },
+      ref("toLocationId", "Transfer destination", "location", false),
+      f("note", "Custody evidence / reason", "textarea", { required: true }),
+    ],
+  },
+  "op:shortageRfqs": {
+    title: "Create RFQs from shortages",
+    fields: [project, supplier],
+  },
+  "op:quoteToPo": {
+    title: "Create PO from approved quote",
+    fields: [
+      f("number", "Unique PO number", "text", { required: true }),
+      num("quantity", "Quantity", 1),
+    ],
+  },
+  "op:backorder": {
+    title: "Record a line backorder",
+    fields: [
+      ref("lineId", "PO line", "poLine"),
+      num("quantity", "Quantity backordered"),
+      reason,
+    ],
+  },
+  "op:timer": {
+    title: "Start a field timer",
+    fields: [
+      project,
+      task,
+      worker,
+      ref("costCodeId", "Job cost code", "costCode", false),
+    ],
+  },
+  "op:rate": {
+    title: "Restricted labor rate",
+    fields: [
+      worker,
+      day("effective", "Effective date"),
+      num("rate", "Hourly rate"),
+      num("overtimeMultiplier", "Overtime multiplier", 1.5),
+      f("currency", "Currency", "select", {
+        options: ["USD", "CAD", "EUR", "GBP"],
+        default: "USD",
+      }),
+    ],
+  },
+  "op:grants": {
+    title: "Account project and payroll access",
+    fields: [
+      multi("projectIds", "Granted projects", "project"),
+      f(
+        "payroll",
+        "Explicit labor-rate and payroll export permission",
+        "checkbox",
+      ),
+    ],
+  },
+  "plan:range": {
+    title: "Assign workers over a date range",
+    fields: [
+      project,
+      task,
+      multi("workerIds", "Workers", "worker"),
+      day("from", "From"),
+      day("to", "Through"),
+      num("start", "Start hour", 7),
+      num("hours", "Hours per working day", 8),
+      f("role", "Crew role"),
+      num("priority", "Priority (1–5)", 3),
+      num("allocation", "Allocation %", 100),
+      f("override", "Manager conflict justification", "textarea"),
+    ],
+  },
+  "plan:template": {
+    title: "Build a crew from a template",
+    fields: [
+      f("crew", "Crew name", "text", { required: true }),
+      multi("workerIds", "Selected workers", "worker"),
+      day("date", "Certification valid on"),
+    ],
+  },
+});
