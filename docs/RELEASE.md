@@ -18,4 +18,14 @@ Screenshots: [resource board](images/resource-acceptance-v031.jpg), [offline syn
 
 ## Hosting
 
-Source: https://github.com/ExJtac/Fieldops. Promotion: https://cas-tx.com/Tracking/. The hosted application is a synthetic read-only demonstration; writable use is self-hosted. The release deployment record is added after backup, migration rehearsal and live verification complete.
+Source: https://github.com/ExJtac/Fieldops. Promotion: https://cas-tx.com/Tracking/. The hosted application is a synthetic read-only demonstration; writable use is self-hosted. The completed backup, migration rehearsal and live verification are recorded below.
+
+## Hosted verification completed
+
+Application source `c18c052ea1686469b211ba637f8f1941fee8d1eb` passed [GitHub CI](https://github.com/ExJtac/Fieldops/actions/runs/45954073169). The source is installed at `/home/deploy/cas-fieldops/releases/20261126-v031`; promotion is `/var/www/cas-fieldops/releases/20261126-v031/Tracking`.
+
+A consistent pre-upgrade backup is retained at `/home/deploy/cas-fieldops/data/backups/pre-v031.sqlite`. The copied-database rehearsal passed with two projects, four calendars, one serialized unit, the source-scope clarification and 28 weekly capacity cells. Rehearsal and local preview processes were stopped. Prior service/scoped Caddy files are retained in `/var/backups/cas-fieldops/20261126-v031` for rollback.
+
+The first HTTP request during service startup returned a transient 502. Once startup completed, the full live verification passed: promotion and assets, app shell/service worker, health 0.3.1, read-only workspace, capacity API, PDF/XLSX signatures, and 403 rejection of project, inventory and billing-webhook writes. Promotion HTML matched the release artifact byte for byte. Browser checks verified the new footer, exact barcode/serial lookup, capacity display and no captured console errors. [Live screenshot](images/public-v031.jpg).
+
+Only FieldOps restarted. Bidlark, SiteScribe, CrewClock, CrewBooks, Inventory, Lumen, CAS-TX, CAS Gantt and Creator Studio process IDs were unchanged. No live Bidlark integration or customer-data workflow was activated.

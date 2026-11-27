@@ -67,6 +67,10 @@ A dedicated `data/acceptance-20261126.sqlite` was used; the user's ordinary work
 
 The offline test disabled the tab's network, reloaded the cached app, unlocked its encrypted kit and saved 8 hours / 3 units / one synthetic JPEG. Changing the task on the server caused the expected conflict. Explicit review allowed exactly one server time/production pair and its attachment; the queue showed zero unsynced drafts. The network and viewport overrides were reset, and the kit was locked afterward. Screenshots: `images/offline-acceptance-v031.jpg`, `images/resource-acceptance-v031.jpg`.
 
+## Final release checks
+
+All 73 automated tests passed, as did TypeScript and the production build. Dependency audit reported zero vulnerabilities. Deployed application commit `c18c052ea1686469b211ba637f8f1941fee8d1eb` passed [GitHub CI](https://github.com/ExJtac/Fieldops/actions/runs/45954073169). [Release verification](RELEASE.md) records the backup rehearsal, live 0.3.1 checks and rollback files. The live browser also verified exact barcode/serial lookup and the corrected capacity display with no captured console errors.
+
 ## Verification boundaries
 
 This is functional acceptance of the documented standalone workflows using automated domain/integration/HTTP tests and the browser flows above. It is not a claim that every possible combination or every browser/device has been tested. Physical barcode scanners are represented by exact keyboard/pasted codes; no camera or GPS is claimed. External billing and event delivery are tested against simulated providers and remain operator-configured. Live Bidlark integration, real supplier email, payroll transmission and payments were not activated.
