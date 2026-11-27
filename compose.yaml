@@ -1,0 +1,15 @@
+services:
+  fieldops:
+    build: .
+    ports:
+      - "127.0.0.1:4328:4328"
+    environment:
+      NODE_ENV: production
+      DATABASE_PATH: /app/data/fieldops.sqlite
+      # Set APP_ORIGIN and COOKIE_SECURE=true when behind your HTTPS proxy.
+    volumes:
+      - fieldops-data:/app/data
+    restart: unless-stopped
+    mem_limit: 512m
+volumes:
+  fieldops-data:
