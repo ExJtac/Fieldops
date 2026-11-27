@@ -11,4 +11,6 @@ The source requirements are the user-provided Material and Manpower Tracking doc
 - [x] Dependency/material-aware calendar scenarios, overtime costing, reversible leveling suggestions and schedule revisions.
 - [x] In-app dispatch and acknowledgements; durable event outbox with idempotency, retries and dead-letter monitoring.
 - [x] Project/section/date-filtered material, financial, reliability, workforce, productivity, warranty and closeout reports; validated permission-gated payroll export.
-- [ ] Regression acceptance, browser/mobile flows, recovery verification, migration and deployment documentation; updated release and CAS-TX promotion.
+- [x] Regression acceptance, browser/mobile flows, recovery verification, migration and deployment documentation; updated release and CAS-TX promotion.
+
+Completed in 0.2. See [release evidence](RELEASE.md) and [operational limits](ACCEPTANCE.md).

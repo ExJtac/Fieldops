@@ -1,29 +1,31 @@
-# CAS FieldOps 0.1 pilot release
+# CAS FieldOps 0.2 standalone release
 
 Released November 26, 2026 (America/Denver).
 
 - Product page: https://cas-tx.com/Tracking/
-- Public read-only demo: https://cas-tx.com/Tracking/app/
-- MIT source repository: https://github.com/ExJtac/cas-fieldops
-- Deployed application source: `d491d4e` on `codex/initial-release`.
-- Local project: `CAS FieldOps` under the user's ChatGPT projects directory.
+- Read-only demonstration: https://cas-tx.com/Tracking/app/
+- MIT source: https://github.com/ExJtac/cas-fieldops
+- Deployed application source: `6941d944c37b8ddb943630b89b76a745e1897c38`.
+- CI: https://github.com/ExJtac/cas-fieldops/actions/runs/45942341023 — passed on Node 22.
 
-## Verification completed
+## Completed verification
 
-29 automated tests passed locally; the initial GitHub Actions build/test run also passed. Tests cover inventory transaction integrity, BOM revision review, assignment conflicts, approved-time accounting, role/tenant isolation, HTTP authentication, evidence access, export filtering, bulk crew time, credential/session revocation and backup/recovery. The production TypeScript/Vite build passed.
+All 47 automated tests passed locally. Production TypeScript/Vite builds passed, including the `/Tracking/app/` deployment prefix. GitHub Actions passed for the deployed source. The production dependency audit reported zero known vulnerabilities; ExcelJS's UUID dependency is overridden to the compatible patched 11.1.1+ series, with workbook import/export exercised by tests.
 
-Browser verification on the writable local demonstration confirmed sign-in, a 33-unit synthetic conduit receipt with updated remaining quantity, persistence after reload, a submitted 8-hour timecard approving into actual labor, the four-person weekly resource board, and narrow-screen navigation. At the tested 390px viewport, page width was 375px with scrollable table interiors. No browser console errors were observed during that pass. The saved preview is an actual local demonstration screenshot, not a design mockup.
+The new tests cover project grants and published-summary isolation; stale import tokens and reviewed conversions; PO amendment version/receipt limits; split shipment quantity and receipt limits; bounded return credits; serialized custody and approved damage; quarantined receipt inspection/returns; calendar range atomicity and overtime policy conflicts; explicit leveling/undo/stale edits; material-constrained scenarios; explicit baseline revisions; worker time review; permissioned validated payroll; timer draft accounting; production corrections; event retry/dead-letter/deduplication; restricted HTTP history/export; retention confirmation; and PDF/XLSX outputs. The original inventory, time, tenant, authentication and backup/restore regressions remain passing.
 
-Public HTTP verification confirmed 200 responses for the promotion, screenshot, stylesheet, app shell, generated JavaScript/CSS, health and workspace endpoints; the workspace reported read-only mode. A public project mutation was rejected with 403. XLSX report download succeeded with the expected MIME type. The promotion HTML matched the local artifact byte for byte. The open-source catalog links to `/Tracking/`, and the existing sitemap now includes that page.
+Browser verification on the writable local app saved and approved a PO freight amendment, saved a worker shift calendar, previewed a two-shift assignment range with zero conflicts and saved it, ran detailed reports and downloaded a PDF. The PDF was rendered and visually checked. A 390px phone layout had no page-level horizontal overflow; wide tables scroll inside their panels. The latest public demo was opened after deployment, and its expanded Operations center rendered without captured browser console errors. Screenshots in `docs/images` show the actual synthetic application.
 
-The public demo uses its own database, read-only server configuration and a dedicated process with CPU/memory limits. It is not a writable customer installation. No shared demo password is published. A database must carry an explicit demo marker before the read-only public mode can expose its records.
+The server migration rehearsal used a consistent online backup of the existing demo database, started the new application against a separate copy, confirmed version 0.2.0, two preserved projects, four added calendars and one synthetic serialized unit, and verified HTTP writes are rejected. The public demo upgrade then preserved the original database and added only the labeled synthetic v0.2 examples.
 
-The CAS-TX routing change adds one scoped Caddy import. Existing application process IDs were identical before and after. CAS Gantt, SiteScribe, CrewClock, CrewBooks, Inventory, Lumen and Bidlark returned HTTP 200 at their checked public entrypoints. Bidlark code and data were not modified.
+Public verification returned HTTP 200 for the product page, stylesheet, screenshot, app shell, generated JS/CSS, health and workspace endpoints. The product HTML matched the local promotion artifact byte for byte. The workspace reported read-only mode with the expanded examples; XLSX and PDF downloads returned valid file signatures/MIME types. A public mutation returned HTTP 403. Bidlark, SiteScribe, CrewClock, CrewBooks, Inventory, Lumen and CAS-TX service process IDs were identical before and after the release. Only FieldOps was restarted; only its scoped Caddy include changed.
 
-## Release recovery notes
+## Recovery and operating boundaries
 
-Public-demo code is at `/home/deploy/cas-fieldops/releases/20261126-v010`; its separate SQLite file is under `/home/deploy/cas-fieldops/data`. The `cas-fieldops` service listens on loopback port 4328. Promotion files are under `/var/www/cas-fieldops/releases/20261126-v010/Tracking`. The route import is `/etc/caddy/cas-fieldops.caddy`.
+The active application is `/home/deploy/cas-fieldops/releases/20261126-v020`; promotion files are under `/var/www/cas-fieldops/releases/20261126-v020/Tracking`. The dedicated `cas-fieldops` service remains loopback-only on port 4328, with CPU/memory limits and a separate synthetic database. The consistent pre-upgrade database backup is `/home/deploy/cas-fieldops/data/backups/pre-v020.sqlite`. Prior FieldOps service and scoped routing files are retained under `/var/backups/cas-fieldops/20261126-v020`.
 
-The prior Caddy configuration, catalog page and sitemap are retained under `/var/backups/cas-fieldops/20261126-v010`. Do not blindly restore those complete files after subsequent site edits. To withdraw FieldOps, remove only its import from the current Caddyfile, validate and reload; remove only its catalog card/sitemap URL; stop only the `cas-fieldops` service. Preserve unrelated additions and all databases.
+To roll back this read-only demo, restore only its saved service/scoped include, validate Caddy, and restart/reload only those services. Preserve unrelated site changes. For a writable installation downgrade, restore the matching private database backup as described in the recovery guide; do not erase a newer working database.
 
-This release does not claim completion of the advanced features listed in [acceptance scope](ACCEPTANCE.md), a commercial security audit, or a live Bidlark integration. Docker instructions are included, but a Docker image build was not executed on the local Mac during this release.
+[Acceptance coverage and operational limits](ACCEPTANCE.md) distinguish the standalone workflows from later Bidlark/external provider integration and optional offline synchronization. This release does not claim external security/payroll certification. Docker instructions are supplied; a Docker image build was not executed on this Mac. The Node self-hosted application and hosted read-only release were exercised directly.
+
+[Prior release evidence](RELEASE-0.1.md).
