@@ -6,3 +6,4 @@ data/
 *.sqlite*
 *.tar.gz
 .DS_Store
+LOCAL-START.txt
