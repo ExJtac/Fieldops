@@ -1,6 +1,6 @@
-# Standalone acceptance — 0.2
+# Standalone acceptance — 0.3
 
-CAS FieldOps 0.2 implements the standalone material/manpower workflows from the supplied tracking brief. Live Bidlark replication is deferred until this standalone edition is used and validated. The product is MIT licensed and self-hosted; commercial SaaS billing, SSO and tenant signup are not part of the standalone edition.
+CAS FieldOps 0.3 implements the standalone material/manpower workflows from the supplied tracking brief. Live Bidlark replication is deferred until this standalone edition is used and validated. The product is MIT licensed and self-hosted. Additional isolated workspaces, module entitlements, supplier accounts, offline drafts and configurable billing/event adapters are included. Live provider deployment is configuration-dependent; SSO is outside the supplied standalone requirements.
 
 ## Requirement coverage
 
@@ -19,14 +19,22 @@ CAS FieldOps 0.2 implements the standalone material/manpower workflows from the 
 
 ## Explicit operational limits
 
-- This is a single-server organization installation, not a multi-replica SaaS. Each self-hosted deployment controls its own accounts, data, backup and retention.
+- This is a single-server installation with isolated organization memberships, not a multi-replica SaaS. Each self-hosted deployment controls its own accounts, data, backup and retention.
 - Barcode/QR lookup accepts keyboard-compatible scanner input or pasted exact values. It does not request camera, location or microphone access.
 - Readiness is based on accepted, allocated stock. Purchase orders, quarantine receipts and conditional scenario arrivals do not make a task ready.
 - Scenarios model crew size and daily overtime beyond eight hours; they do not reserve named workers, calculate taxes or guarantee availability. Named assignments use real calendars/conflict checks. Overnight/DST-changing timers require reviewed manual entries split by work date.
 - Payroll exports are explicitly permissioned gross-hour/rate records. They perform no tax/deduction calculation and do not transmit to a payroll provider. Supplier receipt valuation is not an invoice or payment ledger. Currencies are never silently combined.
-- Period report columns use selected dates; stock and forecast balances are cumulative. Section-specific reports use task allocations. Purchase/delivery/spend tables are project-wide because PO lines are not assigned to sections; this scope is shown in reports.
-- In-app dispatch is implemented. Vendor email, external SMS/email dispatch and live two-way Bidlark/Gantt adapters are deferred. Optional offline synchronization remains the later phase identified in the brief. GPS is excluded.
-- Free standalone modules are included for every installation; roles/project grants/financial permissions still apply. Commercial entitlements and subscription payment processing belong to the later hosted integration.
+- Period report columns use selected dates; stock and forecast balances are cumulative. Section-specific reports use task allocations. Purchase/delivery/spend section reports require explicit task IDs on PO lines and exclude unallocated lines. Freight/tax remain project-only. Receipt valuation preserves PO revisions; legacy receipts use revision timestamps, and same-millisecond legacy edits may require reconciliation.
+- In-app dispatch and signed typed-event delivery are implemented. Native Gantt shares task data. Vendor email/SMS sending and live two-way Bidlark deployment are not configured. Offline drafts are opt-in and encrypted, with explicit conflict resolution. GPS is excluded.
+- Community mode includes both modules; roles/project grants/financial permissions still apply. Optional commercial mode uses operator-configured Stripe plans and verified subscription events. Billing and webhook adapters have simulated-provider regression coverage; no live charge was made.
 - Revisions and operational audit are retained. The UI retention tool deletes only reviewed attachment blobs; full installation deletion is a documented hosting/storage decommissioning operation.
 
 The online demonstration is read-only and synthetic. Writable workflows run in the self-hosted program. There is no claim of external security certification, commercial uptime or payroll certification.
+
+## Full-plan continuation evidence
+
+The requirement matrix in REQUIREMENTS-MATRIX.md maps all additional plan work to implemented code and regression/browser evidence. The complete suite now contains 67 passing tests. It includes exact landed-cost comparisons and approved alternates; intake stale/duplicate/unit/estimate budget checks; combined field entries and worker availability; dated crews; separate financial grants/history; supplier HTTP/document isolation; encrypted offline draft tamper/wrong-key checks and conflict replay; multi-workspace sessions/deactivation; subscription signatures/order/replay; concurrent checkout protection; event consumers/retry/dead letters; receipt valuation/foreman receiving and migration/backup recovery.
+
+Browser acceptance used synthetic local records: the material grid/timeline and native Gantt; combined time/quantity; crew calendars/ranges/heatmaps; external PO mapping failure then corrected reviewed draft save; separate workspace creation/switch; private markup calculation and approval; supplier-specific PO acknowledgement. A production offline build was actually disconnected, reloaded and unlocked, saved a draft, then reconnected; a changed task generated a review conflict and synced once after explicit review. Prior PDF/XLSX rendering and mobile acceptance are retained from 0.2.
+
+The public installation remains a synthetic read-only demonstration. The self-hosted program provides the writable workflows. Operator credentials/configuration are required to activate external billing and destination-specific event delivery. The standalone program does not claim live Bidlark integration.

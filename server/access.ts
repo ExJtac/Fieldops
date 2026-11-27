@@ -1,3 +1,4 @@
+import { vendorRecords } from "./vendor.js";
 import {
   Store,
   type Actor,
@@ -39,9 +40,11 @@ export function filterRecords(
   rows: R[],
 ): R[] {
   const scope = projectIds(s, a);
+  if (a.role === "vendor")
+    return vendorRecords(s, a, kind, rows, scope || new Set());
   if (scope === null) return rows;
   if (kind === "project") return rows.filter((r) => scope.has(r.id));
-  if (["worker", "leave", "calendar"].includes(kind)) {
+  if (["worker", "leave", "calendar", "crewMembership"].includes(kind)) {
     if (a.role === "worker")
       return rows.filter(
         (r) => (kind === "worker" ? r.id : r.workerId) === a.workerId,
@@ -57,7 +60,12 @@ export function filterRecords(
       workers.has(kind === "worker" ? r.id : r.workerId),
     );
   }
-  if (a.role === "worker" && ["time", "timer", "checkin"].includes(kind))
+  if (kind === "availability" && !["admin", "pm", "worker"].includes(a.role))
+    return [];
+  if (
+    a.role === "worker" &&
+    ["time", "timer", "checkin", "production", "availability"].includes(kind)
+  )
     return rows.filter(
       (r) => r.workerId === a.workerId && scope.has(r.projectId),
     );

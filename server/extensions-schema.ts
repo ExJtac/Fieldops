@@ -15,6 +15,13 @@ const optionalDay = z.union([day, z.literal("")]).default(""),
   positive = z.coerce.number().finite().positive().max(1e9),
   money = z.coerce.number().finite().min(0).max(1e9);
 export const extraSchemas = {
+  availability: z.object({
+    projectId: id,
+    workerId: id,
+    date: day,
+    hours: z.number().positive().max(24),
+    reason: text,
+  }),
   conversion: z.object({
     partId: id,
     fromUnit: text,
@@ -33,6 +40,8 @@ export const extraSchemas = {
       .array(
         z.object({
           id,
+          taskId: z.string().default(""),
+          externalLineId: z.string().default(""),
           partId: id,
           quantity: positive,
           unitCost: money,
@@ -89,6 +98,42 @@ export const extraSchemas = {
       .refine((v) => v !== 0),
     reason: text,
   }),
+  crew: z
+    .object({
+      name: text,
+      trade: text,
+      workdays: z
+        .array(z.number().int().min(0).max(6))
+        .min(1)
+        .default([1, 2, 3, 4, 5]),
+      shiftStart: z.number().min(0).max(23).default(7),
+      shiftHours: z.number().positive().max(16).default(8),
+      unpaidBreak: z.number().min(0).max(4).default(0),
+      paidBreak: z.number().min(0).max(4).default(0),
+      holidays: z.array(day).default([]),
+      weeklyLimit: z.number().positive().max(112).default(40),
+      overtimeAllowed: z.boolean().default(false),
+      notes,
+    })
+    .refine(
+      (v) =>
+        v.unpaidBreak + v.paidBreak < v.shiftHours &&
+        v.shiftStart + v.shiftHours <= 24,
+      "Invalid shift/break",
+    ),
+  crewMembership: z
+    .object({
+      crewId: id,
+      workerId: id,
+      from: day,
+      to: optionalDay,
+      role: text,
+      notes,
+    })
+    .refine(
+      (v) => !v.to || v.to >= v.from,
+      "Demobilization must follow mobilization",
+    ),
   crewTemplate: z.object({
     name: text,
     trade: text,
@@ -111,12 +156,15 @@ export const extraSchemas = {
       shiftStart: z.number().min(0).max(23),
       shiftHours: z.number().positive().max(16),
       unpaidBreak: z.number().min(0).max(4).default(0),
+      paidBreak: z.number().min(0).max(4).default(0),
       holidays: z.array(day).default([]),
       weeklyLimit: z.number().positive().max(112).default(40),
       overtimeAllowed: z.boolean().default(false),
     })
     .refine(
-      (v) => v.unpaidBreak < v.shiftHours && v.shiftStart + v.shiftHours <= 24,
+      (v) =>
+        v.unpaidBreak + v.paidBreak < v.shiftHours &&
+        v.shiftStart + v.shiftHours <= 24,
       "Invalid shift/break",
     ),
   equipment: z.object({

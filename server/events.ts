@@ -38,7 +38,7 @@ export function processEvents(
           const assignment = { ...payload, id: e.entity };
           const users = s.db
             .prepare(
-              "SELECT id FROM users WHERE org=? AND worker_id=? AND active=1",
+              "SELECT u.id FROM memberships m JOIN users u ON u.id=m.user_id WHERE m.org=? AND m.worker_id=? AND m.active=1 AND u.active=1",
             )
             .all(e.org, payload.workerId) as any[];
           for (const user of users)

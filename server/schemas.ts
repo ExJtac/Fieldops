@@ -33,6 +33,7 @@ export const schemas = {
           return false;
         }
       }),
+    availabilityRequests: z.boolean().default(true),
     fieldBudget: nonnegative.default(0),
     pmBudget: nonnegative.default(0),
     stagingDays: z.number().int().min(0).max(60).default(2),
@@ -119,6 +120,7 @@ export const schemas = {
       ackDate: optionalDate,
       validUntil: optionalDate,
       rfqId: optional,
+      equivalenceId: optional,
       requestDate: optionalDate,
       responseDate: optionalDate,
       originalText: optional,
@@ -146,6 +148,7 @@ export const schemas = {
     number: text,
     source: optional,
     externalReference: optional,
+    sourceVersion: optional,
     replacesPoId: optional,
     receivingLocationId: optional,
     currency: z.enum(["USD", "CAD", "EUR", "GBP"]).default("USD"),
@@ -156,6 +159,8 @@ export const schemas = {
       .array(
         z.object({
           partId: id,
+          taskId: z.string().default(""),
+          externalLineId: optional,
           quantity: qty,
           unitCost: nonnegative,
           confirmedETA: optionalDate,
@@ -190,6 +195,7 @@ export const schemas = {
     reason: optional,
   }),
   assignment: z.object({
+    crewId: optional,
     projectId: id,
     taskId: id,
     workerId: id,
@@ -200,6 +206,7 @@ export const schemas = {
     role: optional,
     priority: z.number().int().min(1).max(5).default(3),
     allocation: z.number().min(1).max(100).default(100),
+    plannedQuantity: nonnegative.nullable().default(null),
   }),
   time: z
     .object({
@@ -220,6 +227,8 @@ export const schemas = {
       "Hours must be positive and end within the day",
     ),
   production: z.object({
+    workerId: optional,
+    timeId: optional,
     projectId: id,
     taskId: id,
     date,
@@ -263,4 +272,6 @@ export const roles = [
   "foreman",
   "worker",
   "viewer",
+  "finance",
+  "vendor",
 ] as const;

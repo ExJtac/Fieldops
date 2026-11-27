@@ -367,7 +367,9 @@ test("advanced HTTP routes enforce grants, payroll permission, retention preview
     );
     const bytes = Buffer.from("%PDF-1.4 QA old attachment");
     store.db
-      .prepare("INSERT INTO attachments VALUES(?,?,?,?,?,?,?,?,?)")
+      .prepare(
+        "INSERT INTO attachments(id,org,kind,entity,name,mime,bytes,created_at,author) VALUES(?,?,?,?,?,?,?,?,?)",
+      )
       .run(
         "old-file",
         actor.org,
@@ -419,7 +421,7 @@ test("advanced HTTP routes enforce grants, payroll permission, retention preview
     r = await request("/api/v1/organization/export");
     assert.equal(r.status, 200);
     const exported = (await r.json()) as any;
-    assert.equal(exported.schemaVersion, 2);
+    assert.equal(exported.schemaVersion, 7);
     assert.ok(exported.revisions.length);
     assert.equal(exported.users, undefined);
     r = await request("/api/v1/users", {
@@ -466,6 +468,187 @@ test("advanced HTTP routes enforce grants, payroll permission, retention preview
     );
   } finally {
     server.closeAllConnections();
+    await new Promise<void>((r) => server.close(() => r()));
+    store.close();
+  }
+});
+
+test("supplier portal isolates vendor records, blocks internal endpoints, and requires explicit document sharing", async () => {
+  const { Operations } = await import("../server/domain.js"),
+    { Advanced } = await import("../server/advanced.js");
+  const store = new Store(":memory:");
+  store.db
+    .prepare("INSERT INTO organizations VALUES(?,?)")
+    .run("org", "Supplier test");
+  const admin = store.createUser(
+      "org",
+      "buyer@test.invalid",
+      "Buyer",
+      "test-only-password",
+      "admin",
+    ),
+    o = new Operations(store),
+    advanced = new Advanced(o);
+  store.add(admin, "settings", { separation: false });
+  const p = o.create(admin, "project", { name: "Shared job" }),
+    supplier = o.create(admin, "supplier", { name: "Approved supplier" }),
+    other = o.create(admin, "supplier", { name: "Other supplier" }),
+    part = o.create(admin, "part", {
+      partNumber: "V1",
+      description: "Vendor item",
+      unit: "ea",
+    });
+  let po = o.create(admin, "po", {
+    projectId: p.id,
+    supplierId: supplier.id,
+    number: "V-PO",
+    notes: "Internal pricing negotiation",
+    lines: [{ partId: part.id, quantity: 5, unitCost: 10 }],
+  });
+  for (const status of ["Submitted", "Approved", "Issued"])
+    po = o.transition(admin, "po", po.id, { version: po.version, status });
+  const privatePo = o.create(admin, "po", {
+    projectId: p.id,
+    supplierId: other.id,
+    number: "OTHER-PO",
+    lines: [{ partId: part.id, quantity: 5, unitCost: 2 }],
+  });
+  let rfq = o.create(admin, "rfq", {
+    projectId: p.id,
+    supplierId: supplier.id,
+    partId: part.id,
+    quantity: 5,
+  });
+  rfq = o.transition(admin, "rfq", rfq.id, { version: 1, status: "Recorded" });
+  const vendor = store.createUser(
+    "org",
+    "supplier@test.invalid",
+    "Supplier contact",
+    "test-only-password",
+    "vendor",
+    undefined,
+    supplier.id,
+  );
+  o.write(admin, randomUUID(), {}, () =>
+    advanced.grants(admin, { userId: vendor.id, projectIds: [p.id] }),
+  );
+  for (const [id, visible] of [
+    ["private", 0],
+    ["shared", 1],
+  ] as const)
+    store.db
+      .prepare(
+        "INSERT INTO attachments(id,org,kind,entity,name,mime,bytes,created_at,author,vendor_visible) VALUES(?,?,?,?,?,?,?,?,?,?)",
+      )
+      .run(
+        id,
+        "org",
+        "po",
+        po.id,
+        id + ".pdf",
+        "application/pdf",
+        Buffer.from("%PDF-test"),
+        new Date().toISOString(),
+        admin.id,
+        visible,
+      );
+  const server = createApp(store).listen(0, "127.0.0.1");
+  await new Promise<void>((r) => server.once("listening", r));
+  const url = "http://127.0.0.1:" + (server.address() as any).port;
+  let cookie = "";
+  const request = (path: string, body?: any) =>
+    fetch(url + path, {
+      method: body === undefined ? "GET" : "POST",
+      headers: {
+        Cookie: cookie,
+        "Content-Type": "application/json",
+        "Idempotency-Key": randomUUID(),
+      },
+      body: body === undefined ? undefined : JSON.stringify(body),
+    });
+  try {
+    const login = await request("/api/login", {
+      email: "supplier@test.invalid",
+      password: "test-only-password",
+    });
+    assert.equal(login.status, 200);
+    cookie = login.headers.get("set-cookie")!.split(";")[0];
+    const ws = (await (await request("/api/v1/workspace")).json()) as any;
+    assert.equal(ws.data.po.length, 1);
+    assert.equal(ws.data.po[0].id, po.id);
+    assert.equal(ws.data.po[0].notes, undefined);
+    assert.equal(ws.data.worker, undefined);
+    assert.equal(ws.data.rfq.length, 1);
+    for (const path of [
+      "/api/v1/operations",
+      "/api/v1/financial",
+      "/api/v1/reports/json",
+      "/api/v1/timeline/po/" + po.id,
+      "/api/v1/organization/export",
+    ])
+      assert.equal((await request(path)).status, 403, path);
+    assert.equal(
+      (await request("/api/v1/records/project", { name: "Unpermitted" }))
+        .status,
+      403,
+    );
+    const ownQuote = await request("/api/v1/records/quote", {
+      projectId: p.id,
+      supplierId: supplier.id,
+      partId: part.id,
+      rfqId: rfq.id,
+      quantity: 5,
+      unit: "ea",
+      unitCost: 10,
+    });
+    assert.equal(ownQuote.status, 200);
+    assert.equal(
+      (
+        await request("/api/v1/records/quote", {
+          projectId: p.id,
+          supplierId: other.id,
+          partId: part.id,
+          rfqId: rfq.id,
+          quantity: 5,
+          unit: "ea",
+          unitCost: 2,
+        })
+      ).status,
+      403,
+    );
+    assert.equal(
+      (
+        await request("/api/v1/operations/vendorPromise", {
+          id: privatePo.id,
+          version: 1,
+          lines: [],
+        })
+      ).status,
+      403,
+    );
+    const confirmed = await request("/api/v1/operations/vendorPromise", {
+      id: po.id,
+      version: po.version,
+      lines: po.lines.map((l: any) => ({
+        id: l.id,
+        ackDate: "2026-12-01",
+        confirmedETA: "2026-12-08",
+        quantity: 1,
+        unitCost: 0,
+      })),
+    });
+    assert.equal(confirmed.status, 200);
+    const current = (await confirmed.json()) as any;
+    assert.equal(current.lines[0].quantity, 5);
+    assert.equal(current.lines[0].unitCost, 10);
+    const files = (await (
+      await request("/api/v1/attachments?kind=po&id=" + po.id)
+    ).json()) as any[];
+    assert.equal(files.length, 1);
+    assert.equal(files[0].id, "shared");
+    assert.equal((await request("/api/v1/attachments/private")).status, 403);
+    assert.equal((await request("/api/v1/attachments/shared")).status, 200);
+  } finally {
     await new Promise<void>((r) => server.close(() => r()));
     store.close();
   }

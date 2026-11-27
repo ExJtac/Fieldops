@@ -1,3 +1,12 @@
+import {
+  externalPoPreview,
+  externalPoCommit,
+  adaptEstimate,
+  estimatePreview,
+  estimateCommit,
+} from "./intake.js";
+import { decodeWorkbook } from "./imports.js";
+import { adapterView } from "./adapters.js";
 import type { Express } from "express";
 import { z } from "zod";
 import { Operations, canCost } from "./domain.js";
@@ -6,6 +15,13 @@ import { Planning } from "./planning.js";
 import { type Actor, requireThat, hash } from "./store.js";
 import { payrollAccess } from "./access.js";
 import { reportData, renderReport } from "./reports.js";
+import { financialView, commercialAccess } from "./financial.js";
+import { workforceData } from "./workforce.js";
+import {
+  materialWorkspace,
+  materialTimeline,
+  compareQuotes,
+} from "./material-views.js";
 export function advancedRoutes(app: Express, o: Operations) {
   const advanced = new Advanced(o),
     planning = new Planning(o),
@@ -19,10 +35,110 @@ export function advancedRoutes(app: Express, o: Operations) {
         fn,
       ),
     );
+  app.post("/api/v1/intake/decode", async (q, r) => {
+    const a = r.locals.actor;
+    requireThat(
+      ["admin", "pm", "purchasing"].includes(a.role),
+      "Import permission required",
+      403,
+    );
+    if (q.body.mode === "estimate-json")
+      return void r.json(adaptEstimate(q.body.source));
+    r.json({
+      rows: await decodeWorkbook(
+        z.string().parse(q.body.base64),
+        z.enum(["csv", "xlsx"]).parse(q.body.format),
+      ),
+    });
+  });
+  app.post("/api/v1/intake/:mode/preview", (q, r) =>
+    r.json(
+      q.params.mode === "po"
+        ? externalPoPreview(o, r.locals.actor, q.body)
+        : q.params.mode === "estimate"
+          ? estimatePreview(o, r.locals.actor, q.body)
+          : requireThat(false, "Unknown intake", 404),
+    ),
+  );
+  app.post("/api/v1/intake/:mode/commit", (q, r) =>
+    write(q, r, () =>
+      q.params.mode === "po"
+        ? externalPoCommit(o, r.locals.actor, q.body)
+        : q.params.mode === "estimate"
+          ? estimateCommit(o, r.locals.actor, q.body)
+          : requireThat(false, "Unknown intake", 404),
+    ),
+  );
+  app.get("/api/v1/workforce", (q, r) =>
+    r.json(
+      workforceData(o, r.locals.actor, {
+        project: String(q.query.projectId || ""),
+        from: z.string().parse(q.query.from),
+        to: z.string().parse(q.query.to),
+      }),
+    ),
+  );
+  app.get("/api/v1/materials/workspace", (q, r) =>
+    r.json(
+      materialWorkspace(o, r.locals.actor, String(q.query.projectId || "")),
+    ),
+  );
+  app.get("/api/v1/materials/timeline", (q, r) =>
+    r.json(
+      materialTimeline(
+        o,
+        r.locals.actor,
+        z.string().parse(q.query.projectId),
+        z.string().parse(q.query.partId),
+      ),
+    ),
+  );
+  app.get("/api/v1/materials/compare", (q, r) =>
+    r.json(
+      compareQuotes(o, r.locals.actor, {
+        ...q.query,
+        quantity: Number(q.query.quantity),
+      }),
+    ),
+  );
+  app.get("/api/v1/adapters", (_q, r) =>
+    r.json(adapterView(s, r.locals.actor)),
+  );
+  app.get("/api/v1/financial", (q, r) =>
+    r.json(financialView(o, r.locals.actor, String(q.query.projectId || ""))),
+  );
+  app.get("/api/v1/financial/export", (q, r) => {
+    const data = financialView(
+      o,
+      r.locals.actor,
+      String(q.query.projectId || ""),
+    );
+    requireThat(
+      data.commercial || data.payroll,
+      "Explicit financial permission required",
+      403,
+    );
+    s.audit(r.locals.actor, "financial.exported", r.locals.actor.id, {
+      projectId: q.query.projectId || null,
+    });
+    r.attachment("fieldops-private-financials.json").json({
+      schemaVersion: 1,
+      ...data,
+    });
+  });
   app.get("/api/v1/operations", (_q, r) => {
     const a = r.locals.actor as Actor;
     r.json({
       payroll: payrollAccess(s, a),
+      commercial: commercialAccess(o, a),
+      commercialGrants:
+        a.role === "admin"
+          ? s.db
+              .prepare(
+                "SELECT user_id AS userId FROM commercial_access WHERE org=?",
+              )
+              .all(a.org)
+          : [],
       grants:
         a.role === "admin"
           ? s.db
@@ -47,9 +163,7 @@ export function advancedRoutes(app: Express, o: Operations) {
               )
               .all(a.org)
           : [],
-      rates: payrollAccess(s, a)
-        ? s.db.prepare("SELECT * FROM labor_rates WHERE org=?").all(a.org)
-        : [],
+      rates: payrollAccess(s, a) ? financialView(o, a).rates : [],
     });
   });
   app.post("/api/v1/operations/:name", (q, r) =>
@@ -93,9 +207,15 @@ export function advancedRoutes(app: Express, o: Operations) {
     );
     const record = o.ref(a, q.params.kind, q.params.id);
     requireThat(
-      !["po", "quote", "poAmendment", "credit", "supplier", "import"].includes(
-        q.params.kind,
-      ) || canCost(a),
+      ![
+        "po",
+        "quote",
+        "poAmendment",
+        "credit",
+        "supplier",
+        "import",
+        "estimateImport",
+      ].includes(q.params.kind) || canCost(a),
       "Supplier history is restricted",
       403,
     );
@@ -164,7 +284,15 @@ export function advancedRoutes(app: Express, o: Operations) {
       .all(a.org);
     s.audit(a, "organization.exported", a.org);
     r.attachment("fieldops-organization.json").json({
-      schemaVersion: 2,
+      schemaVersion: 7,
+      memberships: s.db
+        .prepare(
+          "SELECT m.user_id,m.role,m.active,u.name,u.email FROM memberships m JOIN users u ON u.id=m.user_id WHERE m.org=?",
+        )
+        .all(a.org),
+      projectGrants: s.db
+        .prepare("SELECT user_id,project_id FROM project_access WHERE org=?")
+        .all(a.org),
       organization: s.db
         .prepare("SELECT * FROM organizations WHERE id=?")
         .get(a.org),
@@ -172,7 +300,7 @@ export function advancedRoutes(app: Express, o: Operations) {
       revisions,
       audit,
       notes:
-        "Operational data export; attachments and login credentials are excluded. Use the SQLite backup command for a complete recovery copy.",
+        "Operational data export; private pricing/rates, attachments and login credentials are excluded. Export authorized private financials separately. Use the SQLite backup command for a complete recovery copy.",
     });
   });
   function retention(a: Actor, days: number) {

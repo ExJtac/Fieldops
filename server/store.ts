@@ -1,3 +1,4 @@
+import { eventContract } from "./contracts.js";
 import { DatabaseSync } from "node:sqlite";
 import {
   randomUUID,
@@ -9,13 +10,21 @@ import {
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 export type Role =
-  "admin" | "pm" | "purchasing" | "foreman" | "worker" | "viewer";
+  | "admin"
+  | "pm"
+  | "purchasing"
+  | "foreman"
+  | "worker"
+  | "viewer"
+  | "finance"
+  | "vendor";
 export type Actor = {
   id: string;
   org: string;
   name: string;
   role: Role;
   workerId?: string;
+  supplierId?: string;
 };
 export type RecordData = {
   id: string;
@@ -78,7 +87,53 @@ export class Store {
  CREATE TRIGGER IF NOT EXISTS ledger_no_delete BEFORE DELETE ON records WHEN OLD.kind='movement' BEGIN SELECT RAISE(ABORT,'Inventory ledger is append-only'); END;
  INSERT OR IGNORE INTO migrations VALUES(1,datetime('now'));
  INSERT OR IGNORE INTO migrations VALUES(2,datetime('now'));
+ CREATE TABLE IF NOT EXISTS commercial_access(org TEXT NOT NULL,user_id TEXT NOT NULL,PRIMARY KEY(org,user_id));
+ CREATE TABLE IF NOT EXISTS commercial_pricing(org TEXT NOT NULL,id TEXT NOT NULL,version INTEGER NOT NULL,project_id TEXT NOT NULL,body TEXT NOT NULL,created_at TEXT NOT NULL,created_by TEXT NOT NULL,PRIMARY KEY(org,id,version));
+ CREATE TABLE IF NOT EXISTS labor_rate_history(id TEXT PRIMARY KEY,org TEXT NOT NULL,worker_id TEXT NOT NULL,effective TEXT NOT NULL,before_body TEXT,after_body TEXT NOT NULL,created_at TEXT NOT NULL,created_by TEXT NOT NULL,reason TEXT NOT NULL);
+ CREATE TRIGGER IF NOT EXISTS customer_price_no_update BEFORE UPDATE ON commercial_pricing BEGIN SELECT RAISE(ABORT,'Pricing revisions are append-only'); END;
+ CREATE TRIGGER IF NOT EXISTS customer_price_no_delete BEFORE DELETE ON commercial_pricing BEGIN SELECT RAISE(ABORT,'Pricing revisions are append-only'); END;
+ CREATE TRIGGER IF NOT EXISTS rate_history_no_update BEFORE UPDATE ON labor_rate_history BEGIN SELECT RAISE(ABORT,'Rate history is append-only'); END;
+ CREATE TRIGGER IF NOT EXISTS rate_history_no_delete BEFORE DELETE ON labor_rate_history BEGIN SELECT RAISE(ABORT,'Rate history is append-only'); END;
+ INSERT OR IGNORE INTO migrations VALUES(3,datetime('now'));
  `);
+    if (
+      !(this.db.prepare("PRAGMA table_info(users)").all() as any[]).some(
+        (c) => c.name === "supplier_id",
+      )
+    )
+      this.db.exec("ALTER TABLE users ADD COLUMN supplier_id TEXT");
+    if (
+      !(this.db.prepare("PRAGMA table_info(attachments)").all() as any[]).some(
+        (c) => c.name === "vendor_visible",
+      )
+    )
+      this.db.exec(
+        "ALTER TABLE attachments ADD COLUMN vendor_visible INTEGER NOT NULL DEFAULT 0",
+      );
+    this.db.exec("INSERT OR IGNORE INTO migrations VALUES(4,datetime('now'))");
+    if (
+      !(this.db.prepare("PRAGMA table_info(sessions)").all() as any[]).some(
+        (c) => c.name === "org_id",
+      )
+    )
+      this.db.exec("ALTER TABLE sessions ADD COLUMN org_id TEXT");
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS memberships(org TEXT NOT NULL,user_id TEXT NOT NULL,role TEXT NOT NULL,worker_id TEXT,supplier_id TEXT,active INTEGER NOT NULL DEFAULT 1,created_at TEXT NOT NULL,PRIMARY KEY(org,user_id));
+      INSERT OR IGNORE INTO memberships SELECT org,id,role,worker_id,supplier_id,active,datetime('now') FROM users;
+      CREATE TABLE IF NOT EXISTS org_owners(org TEXT PRIMARY KEY,user_id TEXT NOT NULL);
+      INSERT OR IGNORE INTO org_owners SELECT org,id FROM users u WHERE role='admin' AND rowid=(SELECT min(rowid) FROM users x WHERE x.org=u.org AND x.role='admin');
+      CREATE TABLE IF NOT EXISTS entitlements(org TEXT PRIMARY KEY,body TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS billing_accounts(org TEXT PRIMARY KEY,customer_id TEXT,subscription_id TEXT,plan TEXT,status TEXT,last_event_at INTEGER NOT NULL DEFAULT 0);
+      CREATE TABLE IF NOT EXISTS billing_events(id TEXT PRIMARY KEY,created INTEGER NOT NULL,type TEXT NOT NULL,processed_at TEXT NOT NULL);
+      INSERT OR IGNORE INTO migrations VALUES(5,datetime('now'));
+      CREATE TABLE IF NOT EXISTS task_material_state(org TEXT NOT NULL,task_id TEXT NOT NULL,status TEXT NOT NULL,digest TEXT NOT NULL,PRIMARY KEY(org,task_id));
+      CREATE TABLE IF NOT EXISTS adapters(id TEXT PRIMARY KEY,org TEXT NOT NULL,name TEXT NOT NULL,endpoint TEXT NOT NULL,secret_env TEXT NOT NULL,enabled INTEGER NOT NULL,event_types TEXT NOT NULL,cursor INTEGER NOT NULL,version INTEGER NOT NULL,created_at TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS adapter_deliveries(adapter_id TEXT NOT NULL,event_id TEXT NOT NULL,state TEXT NOT NULL,attempts INTEGER NOT NULL,next_at INTEGER NOT NULL,error TEXT,delivered_at TEXT,PRIMARY KEY(adapter_id,event_id));
+      INSERT OR IGNORE INTO migrations VALUES(6,datetime('now'));
+      CREATE TABLE IF NOT EXISTS billing_checkout(org TEXT PRIMARY KEY,plan TEXT NOT NULL,provider_key TEXT NOT NULL,expires INTEGER NOT NULL,body TEXT NOT NULL,url TEXT);
+      INSERT OR IGNORE INTO migrations VALUES(7,datetime('now'));
+
+    `);
   }
   tx<T>(fn: () => T): T {
     this.db.exec("BEGIN IMMEDIATE");
@@ -157,11 +212,27 @@ export class Store {
       toVersion: r.version,
       fields: Object.keys(body),
     });
-    this.event(a, kind, r, "updated");
+    this.event(a, kind, r, "updated", old);
     return r;
   }
-  event(a: Actor, kind: string, r: RecordData, action: string) {
+  event(
+    a: Actor,
+    kind: string,
+    r: RecordData,
+    action: string,
+    old?: RecordData,
+  ) {
     if (["notice", "eventStatus"].includes(kind)) return;
+    const contract = eventContract(kind, r, action, old);
+    this.emit(a, kind, r.id, contract.type, contract.data);
+  }
+  emit(
+    a: Actor,
+    kind: string,
+    entity: string,
+    eventType: string,
+    payload: unknown,
+  ) {
     this.db
       .prepare(
         "INSERT INTO outbox(id,org,actor,kind,entity,event_type,payload,created_at) VALUES(?,?,?,?,?,?,?,?)",
@@ -171,16 +242,9 @@ export class Store {
         a.org,
         a.id,
         kind,
-        r.id,
-        kind + "." + action,
-        JSON.stringify({
-          projectId: r.projectId || null,
-          workerId: r.workerId || null,
-          version: r.version,
-          status: r.status || null,
-          date: r.date || null,
-          hours: r.hours || null,
-        }),
+        entity,
+        eventType,
+        JSON.stringify(payload),
         new Date().toISOString(),
       );
   }
@@ -206,25 +270,42 @@ export class Store {
       )
       .all(org);
   }
-  user(id: string): Actor {
+  user(id: string, org?: string): Actor {
     const u = this.db
       .prepare("SELECT * FROM users WHERE id=? AND active=1")
       .get(id) as any;
     requireThat(u, "Sign in required", 401);
+    const m = (
+      org
+        ? this.db
+            .prepare(
+              "SELECT * FROM memberships WHERE user_id=? AND org=? AND active=1",
+            )
+            .get(id, org)
+        : this.db
+            .prepare(
+              "SELECT * FROM memberships WHERE user_id=? AND active=1 ORDER BY (org=?) DESC,created_at LIMIT 1",
+            )
+            .get(id, u.org)
+    ) as any;
+    requireThat(m, "Workspace membership is inactive or missing", 403);
     return {
       id: u.id,
-      org: u.org,
+      org: m.org,
       name: u.name,
-      role: u.role,
-      workerId: u.worker_id || undefined,
+      role: m.role,
+      workerId: m.worker_id || undefined,
+      supplierId: m.supplier_id || undefined,
     };
   }
   session(token: string): Actor {
     const s = this.db
-      .prepare("SELECT user_id FROM sessions WHERE token=? AND expires>?")
+      .prepare(
+        "SELECT user_id,org_id FROM sessions WHERE token=? AND expires>?",
+      )
       .get(hash(token), Date.now()) as any;
     requireThat(s, "Sign in required", 401);
-    return this.user(s.user_id);
+    return this.user(s.user_id, s.org_id || undefined);
   }
   createUser(
     org: string,
@@ -233,6 +314,7 @@ export class Store {
     password: string,
     role: Role,
     workerId?: string,
+    supplierId?: string,
   ) {
     requireThat(
       password.length >= 12,
@@ -241,7 +323,7 @@ export class Store {
     const id = randomUUID();
     this.db
       .prepare(
-        "INSERT INTO users(id,org,email,name,password,role,worker_id) VALUES(?,?,?,?,?,?,?)",
+        "INSERT INTO users(id,org,email,name,password,role,worker_id,supplier_id) VALUES(?,?,?,?,?,?,?,?)",
       )
       .run(
         id,
@@ -251,8 +333,24 @@ export class Store {
         passwordHash(password),
         role,
         workerId || null,
+        supplierId || null,
       );
-    return this.user(id);
+    this.db
+      .prepare("INSERT INTO memberships VALUES(?,?,?,?,?,?,?)")
+      .run(
+        org,
+        id,
+        role,
+        workerId || null,
+        supplierId || null,
+        1,
+        new Date().toISOString(),
+      );
+    if (role === "admin")
+      this.db
+        .prepare("INSERT OR IGNORE INTO org_owners VALUES(?,?)")
+        .run(org, id);
+    return this.user(id, org);
   }
   close() {
     this.db.close();

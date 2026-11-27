@@ -4,7 +4,7 @@ Released November 26, 2026 (America/Denver).
 
 - Product page: https://cas-tx.com/Tracking/
 - Public read-only demo: https://cas-tx.com/Tracking/app/
-- MIT source repository: https://github.com/ExJtac/cas-fieldops
+- MIT source repository: https://github.com/ExJtac/Fieldops
 - Deployed application source: `d491d4e` on `codex/initial-release`.
 - Local project: `CAS FieldOps` under the user's ChatGPT projects directory.
 

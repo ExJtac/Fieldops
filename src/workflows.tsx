@@ -1,4 +1,7 @@
 import React, { useEffect, useState, type ReactNode } from "react";
+import { TenantPanel } from "./tenants";
+import { Intake } from "./intake";
+import { procurementStages } from "./procurement-stages";
 type R = Record<string, any>;
 const BASE = import.meta.env.BASE_URL.replace(/\/$/, "");
 const day = () =>
@@ -160,11 +163,14 @@ export function Workflows({
           ? ["field"]
           : [
               "procurement",
+              ...(["admin", "pm", "purchasing"].includes(role)
+                ? ["intake"]
+                : []),
               "equipment",
               "planning",
               "field",
               "reports",
-              ...(admin || meta.payroll ? ["access"] : []),
+              ...(admin || meta.payroll || meta.commercial ? ["access"] : []),
             ]
         ).map((t) => (
           <button
@@ -179,6 +185,7 @@ export function Workflows({
               (
                 {
                   procurement: "Purchases",
+                  intake: "Source imports",
                   equipment: "Inventory & assets",
                   planning: "Crew & schedule",
                   field: "Field work",
@@ -599,17 +606,66 @@ export function Workflows({
           </section>
         </>
       )}
+      {tab === "intake" && <Intake {...{ ws, project, api, refresh }} />}
       {tab === "planning" && (
         <>
+          <CrewSummary {...{ ws, project, api }} />
           <section className="panel">
             <div className="panel-head">
               <h2>Calendars & crew templates</h2>
               <div className="actions">
+                {manager && button("Create crew", "crew")}
+                {manager && button("Mobilize member", "crewMembership")}
                 {manager && button("Worker calendar", "calendar")}
                 {manager && button("Crew template", "crewTemplate")}
                 {manager && button("Assign date range", "plan:range")}
               </div>
             </div>
+            {table(
+              ["Crew", "Trade / calendar", "Breaks", ""],
+              rows("crew"),
+              (r) => (
+                <>
+                  <td>{r.name}</td>
+                  <td>
+                    {r.trade}
+                    <small>
+                      {r.shiftStart}:00 · {r.shiftHours}h shift ·{" "}
+                      {r.weeklyLimit}h/week
+                    </small>
+                  </td>
+                  <td>
+                    {r.paidBreak || 0}h paid · {r.unpaidBreak}h unpaid
+                  </td>
+                  <td>
+                    {manager && button("Edit crew calendar", "crew", {}, r)}
+                  </td>
+                </>
+              ),
+            )}
+            {table(
+              ["Crew / worker", "Mobilization", "Demobilization", "Role", ""],
+              rows("crewMembership"),
+              (r) => (
+                <>
+                  <td>
+                    {label("crew", r.crewId)}
+                    <small>{label("worker", r.workerId)}</small>
+                  </td>
+                  <td>{r.from}</td>
+                  <td>{r.to || "Open"}</td>
+                  <td>{r.role}</td>
+                  <td>
+                    {manager &&
+                      button("Demobilize", "op:demobilize", {
+                        id: r.id,
+                        version: r.version,
+                        to: day(),
+                      })}
+                  </td>
+                </>
+              ),
+            )}
             {table(
               ["Worker", "Working days", "Shift / break", "Policy", ""],
               rows("calendar"),
@@ -626,7 +682,7 @@ export function Workflows({
                   </td>
                   <td>
                     {r.shiftStart}:00 · {r.shiftHours}h window · {r.unpaidBreak}
-                    h break
+                    h unpaid · {r.paidBreak || 0}h paid
                   </td>
                   <td>
                     {r.weeklyLimit}h/week · overtime{" "}
@@ -745,6 +801,14 @@ export function Workflows({
               </div>
               <div className="actions">
                 {["admin", "pm", "foreman", "worker"].includes(role) &&
+                  button("Time & installed quantity", "op:fieldEntry", {
+                    workerId: ws.actor.workerId,
+                  })}
+                {["admin", "pm", "worker"].includes(role) &&
+                  button("Request availability", "availability", {
+                    workerId: ws.actor.workerId,
+                  })}
+                {["admin", "pm", "foreman", "worker"].includes(role) &&
                   button("Start timer", "op:timer", {
                     action: "start",
                     workerId: ws.actor.workerId,
@@ -806,8 +870,8 @@ export function Workflows({
               [
                 "Date",
                 "Worker / task",
-                "Instructions",
-                "Permits / dependencies",
+                "Instructions / planned production",
+                "Materials / permits / dependencies",
               ],
               rows("assignment")
                 .filter((r) => r.status !== "Cancelled")
@@ -830,8 +894,28 @@ export function Workflows({
                         {r.role || ""} · {r.allocation || 100}%
                       </small>
                     </td>
-                    <td>{task?.instructions || "No instructions recorded"}</td>
                     <td>
+                      {task?.instructions || "No instructions recorded"}
+                      <small>
+                        Planned:{" "}
+                        {r.plannedQuantity == null
+                          ? "Not allocated"
+                          : `${r.plannedQuantity} ${task?.unit}`}
+                      </small>
+                      <small>
+                        Task target: {task?.target} {task?.unit}
+                      </small>
+                    </td>
+                    <td>
+                      {(
+                        ws.readiness.find((t: R) => t.taskId === r.taskId)
+                          ?.lines || []
+                      ).map((l: R) => (
+                        <small key={l.id}>
+                          {l.shortage ? "○" : "✓"} {l.partNumber}: {l.coverage}/
+                          {l.quantity} {l.unit} covered · {l.risk}
+                        </small>
+                      ))}
                       {task?.permits || "—"}
                       <small>
                         {(task?.dependencies || [])
@@ -842,6 +926,56 @@ export function Workflows({
                   </>
                 );
               },
+            )}
+          </section>
+          {proposals("availability", "Availability requests", false, (r) => (
+            <>
+              {label("worker", r.workerId)} · {r.date} · {r.hours}h unavailable
+            </>
+          ))}
+          <section className="panel">
+            <div className="panel-head">
+              <h2>Installed quantity submissions</h2>
+            </div>
+            {table(
+              ["Date / task", "Quantity / crew", "Status / evidence"],
+              rows("production"),
+              (r) => (
+                <>
+                  <td>
+                    {r.date}
+                    <small>{label("task", r.taskId)}</small>
+                  </td>
+                  <td>
+                    {r.quantity} {r.unit}
+                    <small>{r.crewAtEntry || "No crew attribution"}</small>
+                  </td>
+                  <td>
+                    {r.status}
+                    <button onClick={() => showEvidence("production", r)}>
+                      Evidence
+                    </button>
+                    {manager && editable && r.status === "Submitted" && (
+                      <>
+                        <button
+                          onClick={() =>
+                            transition("production", r, "Approved")
+                          }
+                        >
+                          Approve
+                        </button>
+                        <button
+                          onClick={() =>
+                            transition("production", r, "Rejected")
+                          }
+                        >
+                          Reject
+                        </button>
+                      </>
+                    )}
+                  </td>
+                </>
+              ),
             )}
           </section>
           <section className="panel">
@@ -946,6 +1080,8 @@ export function Workflows({
       {tab === "reports" && <ReportTools {...{ ws, project, api }} />}
       {tab === "access" && (
         <>
+          <TenantPanel {...{ ws, api, open, refresh }} />
+          {admin && <AdapterPanel {...{ ws, api, open, action }} />}
           {admin && (
             <section className="panel">
               <div className="panel-head">
@@ -981,6 +1117,9 @@ export function Workflows({
                       projectIds: (meta.grants || [])
                         .filter((g: R) => g.userId === r.id)
                         .map((g: R) => g.projectId),
+                      commercial: (meta.commercialGrants || []).some(
+                        (g: R) => g.userId === r.id,
+                      ),
                       payroll: (meta.payrollGrants || []).some(
                         (g: R) => g.userId === r.id,
                       ),
@@ -1018,6 +1157,9 @@ export function Workflows({
                 ),
               )}
             </section>
+          )}
+          {(meta.payroll || meta.commercial) && (
+            <FinancialPanel {...{ ws, project, api, open, action }} />
           )}
           {meta.payroll && (
             <section className="panel">
@@ -1576,64 +1718,7 @@ export function ProcurementBoard({
   data: R;
   project: string;
 }) {
-  const scoped = (k: string) =>
-    (data[k] || []).filter((r: R) => !project || r.projectId === project);
-  const columns: Record<string, R[]> = {
-    RFQs: scoped("rfq").map((r: R) => ({
-      ...r,
-      label:
-        (data.part || []).find((p: R) => p.id === r.partId)?.partNumber ||
-        "RFQ",
-    })),
-    Quoted: scoped("quote").map((r: R) => ({
-      ...r,
-      label:
-        (data.part || []).find((p: R) => p.id === r.partId)?.partNumber ||
-        "Quote",
-    })),
-    Draft: [],
-    Ordered: [],
-    Partial: [],
-    Received: [],
-    Backordered: [],
-    Cancelled: [],
-    Returned: [],
-  };
-  for (const po of scoped("po"))
-    for (const l of po.lines) {
-      const ms = scoped("movement").filter(
-          (m: R) => m.poId === po.id && m.lineId === l.id,
-        ),
-        received = ms.reduce((n: number, m: R) => n + (m.received || 0), 0),
-        returned = ms
-          .filter((m: R) => m.action === "return")
-          .reduce((n: number, m: R) => n + m.quantity, 0),
-        stage =
-          po.status === "Cancelled"
-            ? "Cancelled"
-            : ["Draft", "Submitted", "Approved"].includes(po.status)
-              ? "Draft"
-              : received >= l.quantity
-                ? "Received"
-                : l.backordered
-                  ? "Backordered"
-                  : received
-                    ? "Partial"
-                    : "Ordered";
-      const card = {
-        id: po.id + l.id,
-        label:
-          po.number +
-          " · " +
-          ((data.part || []).find((p: R) => p.id === l.partId)?.partNumber ||
-            ""),
-        quantity: l.quantity,
-        received,
-        eta: l.confirmedETA || "Unconfirmed",
-      };
-      columns[stage].push(card);
-      if (returned) columns.Returned.push({ ...card, quantity: returned });
-    }
+  const columns = procurementStages(data, project);
   return (
     <section className="procurement-board" aria-label="Procurement stages">
       {Object.entries(columns).map(([name, items]) => (
@@ -1646,7 +1731,7 @@ export function ProcurementBoard({
               <strong>{r.label}</strong>
               <small>
                 {r.received != null ? r.received + " / " : ""}
-                {r.quantity} units
+                {r.quantity} {r.unit || "units"}
               </small>
               <small>{r.eta || r.status}</small>
             </article>
@@ -1654,6 +1739,381 @@ export function ProcurementBoard({
           {!items.length && <p>—</p>}
         </div>
       ))}
+    </section>
+  );
+}
+
+function CrewSummary({
+  ws,
+  project,
+  api,
+}: {
+  ws: R;
+  project: string;
+  api: (path: string) => Promise<any>;
+}) {
+  const [from, setFrom] = useState(day()),
+    [result, setResult] = useState<R | null>(null),
+    [error, setError] = useState("");
+  useEffect(() => {
+    let live = true;
+    setResult(null);
+    if (project) {
+      const to = new Date(Date.parse(from + "T00:00:00Z") + 6 * 86400000)
+        .toISOString()
+        .slice(0, 10);
+      api(
+        "/api/v1/workforce?" +
+          new URLSearchParams({ projectId: project, from, to }),
+      )
+        .then((r) => {
+          if (live) {
+            setResult(r);
+            setError("");
+          }
+        })
+        .catch((e) => live && setError(e.message));
+    }
+    return () => {
+      live = false;
+    };
+  }, [project, from, ws]);
+  const days = [
+      ...new Set((result?.CrewCapacity || []).map((r: R) => r.date)),
+    ] as string[],
+    crews = [
+      ...new Set((result?.CrewCapacity || []).map((r: R) => r.crew)),
+    ] as string[];
+  return (
+    <section className="panel">
+      <div className="panel-head">
+        <div>
+          <h2>Crew capacity this week</h2>
+          <p>
+            Paid breaks stay in paid capacity. Worker and crew calendars both
+            apply. All-job totals include conflicts outside the selected
+            project.
+          </p>
+        </div>
+        <label>
+          Week beginning
+          <input
+            type="date"
+            required
+            value={from}
+            onChange={(e) => e.target.value && setFrom(e.target.value)}
+          />
+        </label>
+      </div>
+      {!project && (
+        <p className="empty-note">
+          Select a project to use its calendar and site constraints.
+        </p>
+      )}
+      {error && <p role="alert">{error}</p>}
+      {result && (
+        <>
+          <div className="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Crew</th>
+                  {days.map((d) => (
+                    <th key={d}>{d}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {crews.map((c) => (
+                  <tr key={c}>
+                    <th>{c}</th>
+                    {days.map((d) => {
+                      const r = result.CrewCapacity.find(
+                        (r: R) => r.crew === c && r.date === d,
+                      );
+                      return (
+                        <td
+                          key={d}
+                          className={
+                            r?.overallocated
+                              ? "capacity-over"
+                              : r?.remaining === 0
+                                ? "capacity-full"
+                                : "capacity-open"
+                          }
+                        >
+                          {r ? `${r.plannedAllJobs}/${r.capacity}h` : "—"}
+                          <small>
+                            {r?.headcount || 0} people · {r?.plannedHere || 0}h
+                            here
+                          </small>
+                        </td>
+                      );
+                    })}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <p>
+            {result.StaffingBottlenecks.length} scheduled assignments have
+            constraints ·{" "}
+            {
+              result.SkillCoverage.filter((r: R) => r.unqualifiedHeadcount > 0)
+                .length
+            }{" "}
+            task-days have certification gaps. Use Detailed reports with dates
+            for trade/site counts, crew productivity and exceptions.
+          </p>
+        </>
+      )}
+    </section>
+  );
+}
+
+function FinancialPanel({
+  ws,
+  project,
+  api,
+  open,
+  action,
+}: {
+  ws: R;
+  project: string;
+  api: (p: string, b?: any) => Promise<any>;
+  open: (k: string, d?: R) => void;
+  action: (f: () => Promise<any>, m?: string) => void;
+}) {
+  const [data, setData] = useState<R | null>(null),
+    [error, setError] = useState("");
+  useEffect(() => {
+    let live = true;
+    api("/api/v1/financial?projectId=" + encodeURIComponent(project))
+      .then((r) => live && setData(r))
+      .catch((e) => live && setError(e.message));
+    return () => {
+      live = false;
+    };
+  }, [ws, project]);
+  return (
+    <section className="panel">
+      <div className="panel-head">
+        <div>
+          <h2>Private financial records</h2>
+          <p>
+            Customer sell prices and markups are stored separately from supplier
+            prices and workforce views. Revising an approved price creates a new
+            draft revision.
+          </p>
+        </div>
+        <div className="actions">
+          {data?.commercial && !ws.readOnly && (
+            <button
+              onClick={() =>
+                open("op:price", {
+                  projectId: project || ws.data.project[0]?.id,
+                })
+              }
+            >
+              Add customer price
+            </button>
+          )}
+          <a
+            className="button"
+            href={`${BASE}/api/v1/financial/export?projectId=${encodeURIComponent(project)}`}
+          >
+            Export private financial history
+          </a>
+        </div>
+      </div>
+      {error && <p role="alert">{error}</p>}
+      {data?.commercial && (
+        <div className="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                {[
+                  "Customer line",
+                  "Quantity",
+                  "Unit sell / total",
+                  "Private basis / markup",
+                  "Revision / status",
+                  "Actions",
+                ].map((h) => (
+                  <th key={h}>{h}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {data.prices.map((r: R) => (
+                <tr key={r.id}>
+                  <td>{r.description}</td>
+                  <td>
+                    {r.quantity} {r.unit}
+                  </td>
+                  <td>
+                    {r.currency} {fmt(r.unitSell)} / {fmt(r.total)}
+                  </td>
+                  <td>
+                    {r.method} · {fmt(r.costBasis)} / {r.markupPercent}%
+                  </td>
+                  <td>
+                    {r.version} · {r.status}
+                  </td>
+                  <td>
+                    {!ws.readOnly && (
+                      <>
+                        <button onClick={() => open("op:price", r)}>
+                          Revise
+                        </button>
+                        {r.status === "Draft" && (
+                          <button
+                            onClick={() =>
+                              action(
+                                () =>
+                                  api("/api/v1/operations/priceApprove", {
+                                    id: r.id,
+                                    version: r.version,
+                                  }),
+                                "Customer price approved",
+                              )
+                            }
+                          >
+                            Approve
+                          </button>
+                        )}
+                      </>
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+      <details>
+        <summary>Authorized revision history</summary>
+        {data?.priceHistory.map((r: R) => (
+          <p key={r.id + ":" + r.version}>
+            {r.updatedAt} · {r.description} · revision {r.version} · {r.status}{" "}
+            · {r.currency} {fmt(r.total)} · {r.reason}
+          </p>
+        ))}
+        {data?.rateHistory.map((r: R) => (
+          <p key={r.id}>
+            {r.created_at} ·{" "}
+            {ws.data.worker.find((w: R) => w.id === r.worker_id)?.name ||
+              "Worker"}{" "}
+            · effective {r.effective} · {r.after.currency} {fmt(r.after.rate)} /
+            hour · {r.reason}
+          </p>
+        ))}
+      </details>
+    </section>
+  );
+}
+
+function AdapterPanel({
+  ws,
+  api,
+  open,
+  action,
+}: {
+  ws: R;
+  api: (p: string, b?: any) => Promise<any>;
+  open: (k: string, d?: R) => void;
+  action: (f: () => Promise<any>, m?: string) => void;
+}) {
+  const [data, setData] = useState<R>({ adapters: [], deliveries: [] }),
+    [error, setError] = useState("");
+  useEffect(() => {
+    api("/api/v1/adapters")
+      .then(setData)
+      .catch((e) => setError(e.message));
+  }, [ws]);
+  return (
+    <section className="panel">
+      <div className="panel-head">
+        <div>
+          <h2>Typed event adapters</h2>
+          <p>
+            Opt-in HTTPS delivery. The installation operator must allow the
+            destination host and configure a signing secret. Enabling an adapter
+            begins with future events; existing business records remain
+            authoritative.
+          </p>
+        </div>
+        {!ws.readOnly && (
+          <button onClick={() => open("op:adapter")}>Add adapter</button>
+        )}
+      </div>
+      {error && <p role="alert">{error}</p>}
+      {data.adapters.map((r: R) => (
+        <p key={r.id}>
+          {r.name} · {r.enabled ? "Enabled" : "Disabled"} · {r.endpoint}
+          {!ws.readOnly && (
+            <button
+              onClick={() =>
+                open("op:adapter", {
+                  ...r,
+                  enabled: !!r.enabled,
+                  eventTypes: JSON.parse(r.event_types),
+                  secretEnv: r.secret_env,
+                })
+              }
+            >
+              Configure
+            </button>
+          )}
+        </p>
+      ))}
+      <div className="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Event / adapter</th>
+              <th>State</th>
+              <th>Attempts / error</th>
+              <th>Retry</th>
+            </tr>
+          </thead>
+          <tbody>
+            {data.deliveries.map((r: R) => (
+              <tr key={r.event_id + r.adapter_id}>
+                <td>
+                  {r.event_id}
+                  <small>
+                    {data.adapters.find((a: R) => a.id === r.adapter_id)?.name}
+                  </small>
+                </td>
+                <td>{r.state}</td>
+                <td>
+                  {r.attempts}
+                  <small>{r.error}</small>
+                </td>
+                <td>
+                  {r.state === "dead-letter" && !ws.readOnly && (
+                    <button
+                      onClick={() =>
+                        action(
+                          () =>
+                            api("/api/v1/operations/adapterRetry", {
+                              adapterId: r.adapter_id,
+                              eventId: r.event_id,
+                            }),
+                          "Delivery queued for retry",
+                        )
+                      }
+                    >
+                      Retry delivery
+                    </button>
+                  )}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
     </section>
   );
 }

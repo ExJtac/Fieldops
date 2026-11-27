@@ -1,3 +1,4 @@
+import { effectiveCalendar } from "./crews.js";
 import { z } from "zod";
 import { Operations, addDays } from "./domain.js";
 import {
@@ -16,6 +17,7 @@ const rangeSchema = z.object({
   start: z.number().min(0).max(23),
   hours: z.number().positive().max(16),
   role: z.string().default(""),
+  crewId: z.string().default(""),
   priority: z.number().int().min(1).max(5).default(3),
   allocation: z.number().min(1).max(100).default(100),
   override: z.string().default(""),
@@ -51,9 +53,7 @@ export class Planning {
         const row = schemas.assignment.parse({ ...b, date: d, workerId: id });
         const conflicts = this.o.assignmentConflicts(a, row);
         if (!save) {
-          const cal = this.o.store
-              .list(a.org, "calendar")
-              .find((c) => c.workerId === id),
+          const cal = effectiveCalendar(this.o.store, a, id, d),
             weekStart = addDays(
               d,
               -((new Date(d + "T00:00:00Z").getUTCDay() + 6) % 7),

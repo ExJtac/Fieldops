@@ -1,3 +1,4 @@
+import { processAdapters } from "./adapters.js";
 import { processEvents } from "./events.js";
 import { createApp } from "./app.js";
 import { Store } from "./store.js";
@@ -35,9 +36,24 @@ if (process.env.DEMO_READ_ONLY === "true") {
   }
 }
 const app = createApp(store);
+let adaptersRunning = false;
 const eventTimer =
   process.env.DEMO_READ_ONLY !== "true"
-    ? setInterval(() => processEvents(store), 5000)
+    ? setInterval(() => {
+        processEvents(store);
+        if (!adaptersRunning) {
+          adaptersRunning = true;
+          void processAdapters(store)
+            .catch(() => {
+              console.error(
+                "Adapter queue processing failed; inspect database health and delivery console",
+              );
+            })
+            .finally(() => {
+              adaptersRunning = false;
+            });
+        }
+      }, 5000)
     : null;
 eventTimer?.unref();
 if (process.env.NODE_ENV === "production") {

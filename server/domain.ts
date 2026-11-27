@@ -1,3 +1,6 @@
+import { guardEntitlement } from "./tenants.js";
+import { vendorWorkspace } from "./vendor.js";
+import { effectiveCrew, effectiveCalendar, crewName } from "./crews.js";
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import {
@@ -15,10 +18,12 @@ const permissions: Record<string, Role[]> = {
   conversion: ["admin", "purchasing"],
   poAmendment: ["admin", "purchasing"],
   credit: ["admin", "purchasing"],
-  shipment: ["admin", "purchasing"],
+  shipment: ["admin", "purchasing", "vendor"],
   asset: ["admin", "purchasing", "foreman"],
   adjustment: ["admin", "purchasing", "foreman"],
   crewTemplate: ["admin", "pm"],
+  crew: ["admin", "pm"],
+  crewMembership: ["admin", "pm"],
   calendar: ["admin", "pm"],
   equipment: ["admin", "pm"],
   scheduleRevision: ["admin", "pm"],
@@ -33,14 +38,15 @@ const permissions: Record<string, Role[]> = {
   supplier: ["admin", "purchasing"],
   location: ["admin", "purchasing"],
   requirement: ["admin", "pm", "purchasing"],
-  quote: ["admin", "purchasing"],
+  quote: ["admin", "purchasing", "vendor"],
   rfq: ["admin", "purchasing"],
   po: ["admin", "purchasing"],
   worker: ["admin", "pm"],
   leave: ["admin", "pm"],
   assignment: ["admin", "pm"],
   time: ["admin", "pm", "foreman", "worker"],
-  production: ["admin", "pm", "foreman"],
+  production: ["admin", "pm", "foreman", "worker"],
+  availability: ["admin", "pm", "worker"],
   reforecast: ["admin", "pm"],
   hold: ["admin", "pm"],
   substitution: ["admin", "pm", "purchasing"],
@@ -75,8 +81,20 @@ export class Operations {
   }
   ref(a: Actor, kind: string, id: string) {
     const r = this.store.get(a.org, kind, id);
+    if (a.role === "vendor")
+      requireThat(
+        filterRecords(this.store, a, kind, [r]).length > 0,
+        "Supplier record access denied",
+        403,
+      );
+    if (kind === "availability")
+      requireThat(
+        ["admin", "pm", "worker"].includes(a.role),
+        "Availability details are restricted",
+        403,
+      );
     if (
-      ["worker", "calendar", "leave"].includes(kind) &&
+      ["worker", "calendar", "leave", "crewMembership"].includes(kind) &&
       !["admin", "pm"].includes(a.role)
     )
       requireThat(
@@ -86,7 +104,10 @@ export class Operations {
       );
     if (kind === "project") projectAccess(this.store, a, r.id);
     else if (r.projectId) projectAccess(this.store, a, r.projectId);
-    if (a.role === "worker" && ["time", "timer", "checkin"].includes(kind))
+    if (
+      a.role === "worker" &&
+      ["time", "timer", "checkin", "production", "availability"].includes(kind)
+    )
       requireThat(r.workerId === a.workerId, "Own records only", 403);
     return r;
   }
@@ -111,7 +132,78 @@ export class Operations {
         );
         return JSON.parse(prior.result);
       }
+      const before = (
+        this.store.db
+          .prepare("SELECT coalesce(max(rowid),0) AS n FROM outbox WHERE org=?")
+          .get(a.org) as any
+      ).n;
       const result = fn();
+      const changed = this.store.db
+        .prepare("SELECT kind FROM outbox WHERE org=? AND rowid>?")
+        .all(a.org, before) as any[];
+      if (
+        changed.some((e) =>
+          [
+            "task",
+            "requirement",
+            "movement",
+            "substitution",
+            "hold",
+            "po",
+            "time",
+            "production",
+            "assignment",
+          ].includes(e.kind),
+        )
+      ) {
+        const system: Actor = { ...a, role: "admin", supplierId: undefined };
+        const forecasts = this.forecast(system);
+        for (const readiness of this.readiness(system)) {
+          const progress = forecasts.find((f) => f.taskId === readiness.taskId),
+            payload = {
+              projectId: readiness.projectId,
+              taskId: readiness.taskId,
+              materialStatus: readiness.status,
+              progress: progress?.progress ?? null,
+              approvedQuantity: progress?.installed ?? 0,
+              actualHours: progress?.actual ?? 0,
+              plannedHours: progress?.planned ?? 0,
+              baselineStart: readiness.baselineStart,
+              baselineEnd: readiness.baselineEnd,
+            };
+          const digest = hash(JSON.stringify(payload)),
+            old = this.store.db
+              .prepare(
+                "SELECT * FROM task_material_state WHERE org=? AND task_id=?",
+              )
+              .get(a.org, readiness.taskId) as any;
+          if (old?.status !== readiness.status && old) {
+            this.store.emit(
+              a,
+              "readiness",
+              readiness.taskId,
+              readiness.status === "Ready"
+                ? "TaskMaterialsBecameReady"
+                : "TaskMaterialReadinessChanged",
+              payload,
+            );
+          }
+          if (old?.digest !== digest) {
+            this.store.emit(
+              a,
+              "progress",
+              readiness.taskId,
+              "ProjectProgressChanged",
+              payload,
+            );
+            this.store.db
+              .prepare(
+                "INSERT INTO task_material_state VALUES(?,?,?,?) ON CONFLICT(org,task_id) DO UPDATE SET status=excluded.status,digest=excluded.digest",
+              )
+              .run(a.org, readiness.taskId, readiness.status, digest);
+          }
+        }
+      }
       this.store.db
         .prepare("INSERT INTO requests VALUES(?,?,?,?)")
         .run(a.org, key, digest, JSON.stringify(result));
@@ -132,6 +224,7 @@ export class Operations {
   }
   create(a: Actor, kind: Kind, raw: unknown) {
     this.allowed(a, kind);
+    guardEntitlement(this.store, a, kind);
     requireThat(kind in schemas, "Unknown record type");
     const b: any = schemas[kind].parse(raw);
     this.validateRefs(a, b);
@@ -179,6 +272,11 @@ export class Operations {
       b.status = "Draft";
       b.lines = b.lines.map((l: any) => {
         this.ref(a, "part", l.partId);
+        if (l.taskId)
+          requireThat(
+            this.ref(a, "task", l.taskId).projectId === b.projectId,
+            "PO line task belongs to another project",
+          );
         requireThat(l.leadMax >= l.leadMin, "Invalid lead-time range");
         return { ...l, id: randomUUID() };
       });
@@ -217,6 +315,7 @@ export class Operations {
         );
       }
       this.timeConflicts(a, b);
+      b.crewAtEntry = crewName(this.store, a, b.workerId, b.date);
       b.workerReviewed = a.workerId === b.workerId;
       b.reviewedByWorker = b.workerReviewed ? a.id : null;
       b.status = "Draft";
@@ -229,6 +328,39 @@ export class Operations {
         "Leave already recorded on this date",
       );
     if (kind === "production") {
+      if (a.role === "worker")
+        requireThat(
+          b.workerId === a.workerId &&
+            this.all(a, "assignment").some(
+              (x) =>
+                x.workerId === a.workerId &&
+                x.taskId === b.taskId &&
+                x.date === b.date &&
+                x.status !== "Cancelled",
+            ),
+          "Own assigned task and date required",
+          403,
+        );
+      if (b.timeId) {
+        const time = this.ref(a, "time", b.timeId);
+        requireThat(
+          time.workerId === b.workerId &&
+            time.projectId === b.projectId &&
+            time.taskId === b.taskId &&
+            time.date === b.date,
+          "Production must match the linked timecard",
+        );
+        requireThat(
+          !this.all(a, "production").some(
+            (p) => p.timeId === b.timeId && p.status !== "Rejected",
+          ),
+          "Timecard already has a production record",
+          409,
+        );
+      }
+      b.crewAtEntry = b.workerId
+        ? crewName(this.store, a, b.workerId, b.date)
+        : "";
       const t = this.ref(a, "task", b.taskId);
       requireThat(
         t.unit === b.unit,
@@ -270,6 +402,7 @@ export class Operations {
   }
   edit(a: Actor, kind: Kind, id: string, raw: any) {
     this.allowed(a, kind);
+    guardEntitlement(this.store, a, kind === "project" ? "project-edit" : kind);
     const old = this.ref(a, kind, id);
     requireThat(
       [
@@ -284,6 +417,7 @@ export class Operations {
         "time",
         "calendar",
         "crewTemplate",
+        "crew",
         "equipment",
         "costCode",
       ].includes(kind),
@@ -346,11 +480,36 @@ export class Operations {
       );
       b.lines = b.lines.map((l: any, i: number) => {
         this.ref(a, "part", l.partId);
+        if (l.taskId)
+          requireThat(
+            this.ref(a, "task", l.taskId).projectId === b.projectId,
+            "PO line task belongs to another project",
+          );
         requireThat(l.leadMax >= l.leadMin, "Invalid lead time");
-        return { ...l, id: old.lines[i]?.id || randomUUID() };
+        return {
+          ...l,
+          id:
+            (l.externalLineId
+              ? old.lines.find((x: R) => x.externalLineId === l.externalLineId)
+                  ?.id
+              : old.lines[i]?.id) || randomUUID(),
+        };
       });
     }
     if (kind === "time") {
+      if (
+        this.all(a, "production").some(
+          (p) => p.timeId === old.id && p.status !== "Rejected",
+        )
+      )
+        requireThat(
+          b.workerId === old.workerId &&
+            b.taskId === old.taskId &&
+            b.projectId === old.projectId &&
+            b.date === old.date,
+          "Linked production fixes the timecard worker, task and date; reject or correct production first",
+          409,
+        );
       requireThat(
         ["Draft", "Rejected"].includes(old.status),
         "Request a correction before editing approved time",
@@ -404,6 +563,7 @@ export class Operations {
     );
   }
   transition(a: Actor, kind: string, id: string, raw: any) {
+    guardEntitlement(this.store, a, kind);
     const r = this.ref(a, kind, id),
       status = z.string().parse(raw.status);
     let allowed: string[] = [];
@@ -450,7 +610,7 @@ export class Operations {
           this.separation(a, r);
           const linked = this.store.db
             .prepare(
-              "SELECT id FROM users WHERE org=? AND worker_id=? AND active=1",
+              "SELECT u.id FROM memberships m JOIN users u ON u.id=m.user_id WHERE m.org=? AND m.worker_id=? AND m.active=1 AND u.active=1",
             )
             .all(a.org, r.workerId);
           if (linked.length)
@@ -565,6 +725,7 @@ export class Operations {
       .reduce((s, m) => s + (m.received || 0), 0);
   }
   movement(a: Actor, raw: any, assetId = "") {
+    guardEntitlement(this.store, a, "movement");
     requireThat(
       ["admin", "purchasing", "foreman"].includes(a.role),
       "Your role cannot move inventory",
@@ -658,8 +819,8 @@ export class Operations {
       quarantined: 0,
     };
     if (["receive", "return", "inspect"].includes(b.action)) {
-      this.allowed(a, "po");
       const po = this.ref(a, "po", b.poId);
+      delta.poVersion = po.version;
       const line = po.lines.find((l: any) => l.id === b.lineId);
       requireThat(
         line && line.partId === b.partId,
@@ -858,9 +1019,7 @@ export class Operations {
     return record;
   }
   workerCapacity(a: Actor, project: R, worker: R, day: string) {
-    const c = this.store
-      .list(a.org, "calendar")
-      .find((c) => c.workerId === worker.id);
+    const c = effectiveCalendar(this.store, a, worker.id, day);
     const p = {
       ...project,
       holidays: [
@@ -876,7 +1035,9 @@ export class Operations {
       p,
       {
         ...worker,
-        dailyHours: c ? c.shiftHours - c.unpaidBreak : worker.dailyHours,
+        dailyHours: c
+          ? Math.max(0, c.shiftHours - c.unpaidBreak)
+          : worker.dailyHours,
       },
       day,
       this.store.list(a.org, "leave"),
@@ -899,6 +1060,13 @@ export class Operations {
     const conflicts: string[] = [];
     if (b.start + b.hours > 24)
       conflicts.push("Shift crosses midnight; split it into dated shifts");
+    if (
+      b.crewId &&
+      effectiveCrew(this.store, a, w.id, b.date)?.crew.id !== b.crewId
+    )
+      conflicts.push(
+        "Worker is not an effective member of this crew on the assignment date",
+      );
     if (!w.active) conflicts.push("Worker is inactive");
     if (!t.released) conflicts.push("Task is not released");
     if (
@@ -921,9 +1089,7 @@ export class Operations {
       )
     )
       conflicts.push("Required certification is missing or expired");
-    const c = this.store
-      .list(a.org, "calendar")
-      .find((c) => c.workerId === w.id);
+    const c = effectiveCalendar(this.store, a, w.id, b.date);
     if (c) {
       if (
         b.start < c.shiftStart ||
@@ -1170,6 +1336,12 @@ export class Operations {
       });
   }
   snapshot(a: Actor) {
+    if (a.role === "vendor")
+      return vendorWorkspace(
+        this.store,
+        a,
+        projectIds(this.store, a) || new Set(),
+      );
     const kinds = [
       ...Object.keys(schemas),
       "movement",

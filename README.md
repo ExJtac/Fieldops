@@ -39,19 +39,23 @@ Or run `docker compose up --build -d`; the port is bound to localhost. The named
 
 ## Standalone scope
 
-Version **0.2** implements the standalone workflows in the tracking brief. See [acceptance and operational limits](docs/ACCEPTANCE.md) and [release evidence](docs/RELEASE.md).
+Version **0.3** implements the standalone workflows in the tracking brief. See [acceptance and operational limits](docs/ACCEPTANCE.md) and [release evidence](docs/RELEASE.md).
 
-This edition is an MIT-licensed, single-server application. All modules are included; it has no subscription billing, SSO or public multi-tenant signup. A later Bidlark adapter will supply its own tenant identity and commercial entitlements. Live Bidlark/Gantt synchronization, external email/SMS delivery and optional offline synchronization are outside this standalone release. No GPS, automatic payroll transmission, tax calculation or supplier-email automation is enabled.
+This edition is an MIT-licensed, single-server application with multiple isolated organization workspaces. Community mode includes both modules without subscription or application-enforced usage limits. Workspace membership, project grants and separate financial permissions remain enforced. Native Gantt uses the same project/task records as Operations. Approved supplier accounts see only shared procurement records. Encrypted offline field drafts support explicit conflict review and retry-safe sync.
+
+Optional hosted billing and signed event adapters are implemented and tested with simulated providers. They require operator configuration; community use does not. Live Bidlark replication remains the next separate integration stage. No GPS, automatic payroll transmission, tax calculation or supplier-email automation is enabled.
 
 Scanning accepts exact barcode/QR values from keyboard-compatible scanners or pasted codes. PDF/CSV/XLSX reports are downloadable; payroll gross is a rate-based export, not a payroll processor. Readiness still requires accepted, allocated stock. Scenario dates are conditional on recorded constraints and do not guarantee future crew availability.
 
-Each installation starts with one organization. Storage and authorization remain tenant-scoped. SQLite targets a small-team single-server deployment; multiple replicas require a different deployment/database design.
+Each installation starts with one organization; administrators can create additional workspaces and add existing accounts. Storage and authorization remain tenant-scoped. SQLite targets a small-team single-server deployment; multiple replicas require a different deployment/database design.
 
 The public demo is read-only and contains synthetic records. Install your own copy for writable use.
 
-## Upgrade from 0.1
+## Upgrade from 0.1 or 0.2
 
-Back up the database before updating. Migration 2 adds project grants, isolated rates and the event outbox without rewriting operational history. **Non-admin accounts need explicit project grants after upgrade** (worker accounts also inherit access from their assignments). Use Operations center → Access & data. Viewer accounts see nothing until a manager/admin publishes a project summary. Payroll remains disabled until an administrator explicitly grants it, including to themselves. Existing quote records can enter the new approval workflow.
+Back up the database before updating. Additive migrations through version 7 preserve operational history and add memberships, vendor document visibility, separate commercial pricing/rate history, billing state and adapter delivery receipts. Existing accounts become members of their original workspace; existing sessions retain their original workspace. Back up before upgrading. **Non-admin accounts need explicit project grants after upgrade** (worker accounts also inherit access from their assignments). Use Operations center → Access & data. Viewer accounts see nothing until a manager/admin publishes a project summary. Payroll remains disabled until an administrator explicitly grants it, including to themselves. Existing quote records can enter the new approval workflow.
+
+See [extended workflows and configuration](docs/USER-GUIDE.md#expanded-standalone-workflows-03) for imports, offline drafts, suppliers, tenants, billing and signed event adapters.
 
 ## Configuration and recovery
 

@@ -12,17 +12,86 @@ export function validateExtra(o: Operations, a: Actor, kind: string, b: any) {
     ].includes(kind)
   )
     b.status = "Proposed";
+  if (kind === "crewMembership") {
+    o.ref(a, "crew", b.crewId);
+    requireThat(
+      !o.store
+        .list(a.org, "crewMembership")
+        .some(
+          (m) =>
+            m.workerId === b.workerId &&
+            m.status !== "Cancelled" &&
+            m.from <= (b.to || "2199-12-31") &&
+            (m.to || "2199-12-31") >= b.from,
+        ),
+      "Worker already belongs to a crew during this period",
+      409,
+    );
+    b.status = "Active";
+  }
+  if (kind === "availability") {
+    const project = o.ref(a, "project", b.projectId);
+    if (a.role === "worker")
+      requireThat(
+        project.availabilityRequests !== false &&
+          b.workerId === a.workerId &&
+          o
+            .all(a, "assignment")
+            .some(
+              (x) =>
+                x.workerId === a.workerId &&
+                x.projectId === b.projectId &&
+                x.status !== "Cancelled",
+            ),
+        "Availability requests are disabled or outside your assigned project",
+        403,
+      );
+    requireThat(
+      !o
+        .all(a, "availability")
+        .some(
+          (x) =>
+            x.workerId === b.workerId &&
+            x.date === b.date &&
+            x.status !== "Rejected",
+        ),
+      "An availability request already exists for this date",
+      409,
+    );
+    b.status = "Proposed";
+  }
   if (kind === "quote") {
     b.status = "Quoted";
+    if (a.role === "vendor")
+      requireThat(
+        b.supplierId === a.supplierId && !!b.rfqId,
+        "Supplier quotes require your assigned RFQ",
+        403,
+      );
+    let equivalence: any;
+    if (b.equivalenceId) {
+      equivalence = o.ref(a, "substitution", b.equivalenceId);
+      requireThat(
+        equivalence.status === "Approved" &&
+          equivalence.projectId === b.projectId &&
+          equivalence.replacementPartId === b.partId,
+        "Approved task equivalence required",
+      );
+    }
     if (b.rfqId) {
       const rfq = o.ref(a, "rfq", b.rfqId);
       requireThat(
-        rfq.partId === b.partId &&
+        (rfq.partId === b.partId ||
+          equivalence?.originalPartId === rfq.partId) &&
           rfq.projectId === b.projectId &&
           rfq.supplierId === b.supplierId,
         "Quote must match RFQ",
       );
     }
+    requireThat(
+      !b.requestDate || !b.responseDate || b.responseDate >= b.requestDate,
+      "Response date must follow request date",
+    );
     requireThat(
       new Set(b.tiers.map((t: any) => t.minimum)).size === b.tiers.length,
       "Duplicate quote quantity tier",
@@ -107,6 +176,11 @@ export function validateExtra(o: Operations, a: Actor, kind: string, b: any) {
     }
     for (const l of b.lines) {
       o.ref(a, "part", l.partId);
+      if (l.taskId)
+        requireThat(
+          o.ref(a, "task", l.taskId).projectId === b.projectId,
+          "PO line task belongs to another project",
+        );
       requireThat(l.leadMax >= l.leadMin, "Invalid lead-time range");
     }
   }
@@ -253,7 +327,7 @@ export function validateExtra(o: Operations, a: Actor, kind: string, b: any) {
     b.originalVersion = p.version;
   }
   if (kind === "notice") {
-    const user = o.store.user(b.recipientId);
+    const user = o.store.user(b.recipientId, a.org);
     requireThat(
       user.org === a.org,
       "Recipient belongs to another organization",

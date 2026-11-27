@@ -1,6 +1,6 @@
 # Architecture and integration contract
 
-CAS FieldOps is a single-server TypeScript application with a React UI, an Express API and durable SQLite. `Store` creates additive schema version 2 at startup; `revisions` and `attachments` are also created additively for existing installations. The database uses WAL, foreign keys, a busy timeout and `BEGIN IMMEDIATE` for every authenticated mutation. Backups use SQLite's online backup API.
+CAS FieldOps is a single-server TypeScript application with a React UI, an Express API and durable SQLite. `Store` creates additive schema version 7 at startup; `revisions` and `attachments` are also created additively for existing installations. The database uses WAL, foreign keys, a busy timeout and `BEGIN IMMEDIATE` for every authenticated mutation. Backups use SQLite's online backup API.
 
 Organizations, users and sessions are relational. Domain records are typed and Zod-validated JSON keyed by `(org, kind, id)`, with project indexes and a unique per-organization PO number. Record revisions retain prior bodies. Immutable inventory movements and audit events have database-level update/delete guards. Quantities are normalized to an explicit unit; inventory comparisons use a 1e-6 tolerance. Only explicitly selected, approved conversions can normalize import units; original rows and factors remain traceable. Preview tokens bind the reviewed source, part version, conversion and existing requirement.
 
@@ -61,4 +61,19 @@ Project grants and payroll grants are relational, separate from roles and from t
 
 Schedule revisions explicitly choose forecast or approved baseline mode. The prior baseline remains in record revisions, and the original baseline is retained when rebaselining. No readiness or scenario calculation silently moves dates. Quarantine receipts count toward delivery reconciliation but not usable stock; inspection releases accepted quantity. Serialized units cannot be consumed by bulk movements.
 
-A distributed database adapter, SSO, commercial billing/entitlements, external event adapters and offline conflict synchronization remain later integration work.
+Distributed storage, SSO and live Bidlark deployment remain outside this single-server implementation; SSO is not required by the supplied standalone brief.
+
+## Expanded standalone contracts (0.3)
+
+- Materials: `GET /materials/workspace`, `/materials/timeline`, `/materials/compare` provide scoped grid/history and exact quantity/unit/currency quote comparison.
+- Intake: `POST /intake/decode`, `/intake/{po,estimate}/preview`, `/intake/{po,estimate}/commit`. Preview tokens bind reviewed source and current records; commits are atomic. External PO source-line IDs persist across revisions. Estimate versions carry source hashes, field/PM budgets and explicit task allocations. The adapter matches the inspected Bidlark `lineItems`, `bomSnapshot`, `lineItemsSnapshot` and revision contracts; per-unit labor hours are multiplied by quantity. Missing units require human mapping.
+- Field: minimal assigned packages derived from the authorized `/workspace` snapshot; `POST /operations/fieldEntry`, `/operations/fieldSync`; sync includes assignment/task versions and stable idempotency keys. Conflict review is explicit, and evidence uploads have separate retry receipts.
+- People: dated `crewMembership` records and crew/worker calendars intersect. Historical time/production preserve `crewAtEntry`; `GET /workforce` provides scoped headcount, capacity, productivity and bottleneck tables.
+- Financials: `GET /financial`, `/financial/export`; `/operations/price` and `/operations/priceApprove` append private price revisions. Rates and their revision history are in separate tables. General organization exports omit both.
+- Tenancy: `GET/POST /tenants`, `POST /tenants/members`, `/tenants/switch`, `/tenants/owner`. Session-selected membership supplies the actor; the client cannot choose a role.
+- Hosted billing: `GET /billing`, `POST /billing/checkout`, `/billing/portal`; the raw signed webhook is `POST /api/billing/webhook`. Plan entitlement does not bypass role/project/financial permissions. One pending checkout per organization shares a stable provider idempotency key and expires after 31 minutes.
+- External events: `GET /adapters`, `POST /operations/adapter`, `/operations/adapterRetry`. Contract version 1 includes stable event/org/entity IDs, event type, timestamp and nonfinancial data. `server/contracts.ts` lists supported types. Readiness and progress changes commit with business records. Each adapter has its own cursor, queue, receipt and five-attempt dead-letter policy. New adapters start with future events.
+
+Supplier routes are explicitly allowlisted. Supplier promises only update acknowledged/confirmed dates; they cannot edit quantity or price. Vendor documents require explicit sharing. Native Gantt reads the same readiness and forecast arrays as the dashboard.
+
+Inventory receipt records preserve PO version IDs, not private prices. Financial report valuation resolves the corresponding private revision. Returns use the running weighted-average received value and reversals undo the original value. Older receipts without a version use the last PO revision timestamp at receipt; same-millisecond legacy edits may require reconciliation. Optional PO-line task allocations drive section delivery/spend reports; unallocated lines remain project-only. Freight/tax have no assumed section split.

@@ -1,3 +1,5 @@
+import { saveAdapter, retryAdapter } from "./adapters.js";
+import { savePrice } from "./financial.js";
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import {
@@ -94,6 +96,14 @@ export class Advanced {
     else this.manager(a);
     if (status === "Approved") {
       o.separation(a, r);
+      if (kind === "availability") {
+        o.create(a, "leave", {
+          workerId: r.workerId,
+          date: r.date,
+          hours: r.hours,
+          reason: "Approved availability request",
+        });
+      }
       if (kind === "poAmendment") {
         validateExtra(o, a, kind, r);
         const po = o.ref(a, "po", r.poId);
@@ -267,13 +277,15 @@ export class Advanced {
         userId: z.string(),
         projectIds: z.array(z.string()).max(5000),
         payroll: z.boolean().default(false),
+        commercial: z.boolean().default(false),
       })
       .parse(b);
-    const user = this.o.store.user(input.userId);
+    const user = this.o.store.user(input.userId, a.org);
     requireThat(user.org === a.org, "Account belongs to another organization");
     requireThat(
-      !input.payroll || ["admin", "pm"].includes(user.role),
-      "Payroll permission is limited to administrators and project managers",
+      !(input.payroll || input.commercial) ||
+        ["admin", "pm", "finance"].includes(user.role),
+      "Financial permissions are limited to administrators, project managers and finance accounts",
     );
     for (const p of input.projectIds) this.o.ref(a, "project", p);
     const db = this.o.store.db;
@@ -290,7 +302,17 @@ export class Advanced {
     db.prepare(
       "INSERT INTO financial_access VALUES(?,?,?) ON CONFLICT(org,user_id) DO UPDATE SET payroll=excluded.payroll",
     ).run(a.org, user.id, input.payroll ? 1 : 0);
+    db.prepare("DELETE FROM commercial_access WHERE org=? AND user_id=?").run(
+      a.org,
+      user.id,
+    );
+    if (input.commercial)
+      db.prepare("INSERT INTO commercial_access VALUES(?,?)").run(
+        a.org,
+        user.id,
+      );
     this.o.store.audit(a, "access.updated", user.id, {
+      commercial: input.commercial,
       projects: input.projectIds,
       payroll: input.payroll,
     });
@@ -658,6 +680,27 @@ export class Advanced {
       })
       .parse(b);
     this.o.ref(a, "worker", v.workerId);
+    const prior = this.o.store.db
+      .prepare(
+        "SELECT * FROM labor_rates WHERE org=? AND worker_id=? AND effective=?",
+      )
+      .get(a.org, v.workerId, v.effective);
+    this.o.store.db
+      .prepare("INSERT INTO labor_rate_history VALUES(?,?,?,?,?,?,?,?,?)")
+      .run(
+        randomUUID(),
+        a.org,
+        v.workerId,
+        v.effective,
+        prior ? JSON.stringify(prior) : null,
+        JSON.stringify(v),
+        new Date().toISOString(),
+        a.id,
+        z
+          .string()
+          .max(3000)
+          .parse(b.reason || "Recorded effective rate revision"),
+      );
     this.o.store.db
       .prepare(
         "INSERT INTO labor_rates VALUES(?,?,?,?,?,?) ON CONFLICT(org,worker_id,effective) DO UPDATE SET rate=excluded.rate,overtime_multiplier=excluded.overtime_multiplier,currency=excluded.currency",
@@ -676,6 +719,129 @@ export class Advanced {
     return { ok: true };
   }
   command(a: Actor, name: string, b: any): any {
+    if (name === "adapter") return saveAdapter(this.o.store, a, b);
+    if (name === "adapterRetry") return retryAdapter(this.o.store, a, b);
+    if (name === "vendorPromise") {
+      requireThat(a.role === "vendor", "Supplier account required", 403);
+      const po = this.o.ref(a, "po", z.string().parse(b.id));
+      requireThat(
+        ["Issued", "Acknowledged"].includes(po.status),
+        "Issued PO required",
+      );
+      const promises = z
+        .array(
+          z.object({
+            id: z.string(),
+            confirmedETA: schemas.po.shape.lines.element.shape.confirmedETA,
+            ackDate: schemas.po.shape.lines.element.shape.ackDate,
+          }),
+        )
+        .parse(b.lines);
+      requireThat(
+        promises.length === po.lines.length &&
+          new Set(promises.map((l) => l.id)).size === po.lines.length &&
+          promises.every((l) => po.lines.some((p: any) => p.id === l.id)),
+        "Confirm each PO line exactly once",
+      );
+      return this.o.store.update(
+        a,
+        "po",
+        po.id,
+        {
+          status: "Acknowledged",
+          lines: po.lines.map((l: any) => ({
+            ...l,
+            ...promises.find((p) => p.id === l.id),
+          })),
+        },
+        z.number().int().parse(b.version),
+      );
+    }
+    if (name === "price") return savePrice(this.o, a, b);
+    if (name === "priceApprove") return savePrice(this.o, a, b, true);
+    if (name === "demobilize") {
+      this.manager(a);
+      const member = this.o.ref(a, "crewMembership", b.id),
+        to = date.parse(b.to);
+      requireThat(to >= member.from, "Demobilization must follow mobilization");
+      requireThat(
+        !member.to || to <= member.to,
+        "Use a new membership to extend a completed period",
+      );
+      return this.o.store.update(
+        a,
+        "crewMembership",
+        member.id,
+        { to },
+        z.number().int().parse(b.version),
+      );
+    }
+    if (name === "fieldSync") {
+      this.o.allowed(a, "time");
+      const context = z
+          .object({
+            assignmentId: z.string(),
+            assignmentVersion: z.number().int(),
+            taskVersion: z.number().int(),
+          })
+          .parse(b.context),
+        assignment = this.o.ref(a, "assignment", context.assignmentId),
+        task = this.o.ref(a, "task", assignment.taskId);
+      requireThat(
+        a.role !== "worker" || assignment.workerId === a.workerId,
+        "Own assigned work only",
+        403,
+      );
+      requireThat(
+        assignment.status !== "Cancelled" &&
+          assignment.version === context.assignmentVersion &&
+          task.version === context.taskVersion,
+        "Offline work package changed; review and rebase the draft",
+        409,
+      );
+      requireThat(
+        b.payload.projectId === assignment.projectId &&
+          b.payload.taskId === assignment.taskId &&
+          b.payload.workerId === assignment.workerId &&
+          b.payload.date === assignment.date,
+        "Offline draft must match the assigned work package",
+        409,
+      );
+      const mode = z
+        .enum(["fieldEntry", "production", "checkin"])
+        .parse(b.mode);
+      const result =
+        mode === "fieldEntry"
+          ? this.command(a, "fieldEntry", b.payload)
+          : this.o.create(a, mode, b.payload);
+      this.o.store.audit(a, "offline.synced", assignment.id, {
+        mode,
+        assignmentVersion: assignment.version,
+        taskVersion: task.version,
+      });
+      return result;
+    }
+    if (name === "fieldEntry") {
+      const time = this.o.create(a, "time", b);
+      const quantity = z
+        .number()
+        .min(0)
+        .max(1e9)
+        .parse(b.quantity ?? 0);
+      const production = quantity
+        ? this.o.create(a, "production", {
+            projectId: time.projectId,
+            taskId: time.taskId,
+            workerId: time.workerId,
+            timeId: time.id,
+            date: time.date,
+            quantity,
+            unit: b.unit,
+            notes: b.notes,
+          })
+        : null;
+      return { time, production };
+    }
     if (name === "grants") return this.grants(a, b);
     if (name === "publish") return this.publish(a, b);
     if (name === "assetMove") return this.assetMove(a, b.id, b);

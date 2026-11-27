@@ -31,6 +31,11 @@ import {
   FolderKanban,
   RefreshCw,
 } from "lucide-react";
+import { WorkspaceSwitcher } from "./tenants";
+import { OfflineKit } from "./offline";
+import { VendorPortal } from "./vendor";
+import { ScheduleGantt } from "./gantt";
+import { MaterialWorkspace, QuoteComparison } from "./material-workspace";
 import { Workflows, ProcurementBoard } from "./workflows";
 import { forms, type Field } from "./forms";
 import "@fontsource/dm-sans/400.css";
@@ -66,6 +71,7 @@ const nav = [
   ["inventory", "Inventory", Warehouse],
   ["crews", "People & crews", Users],
   ["assignments", "Resource board", CalendarDays],
+  ["schedule", "Project Gantt", CalendarDays],
   ["time", "Timesheets", Clock],
   ["production", "Daily production", ClipboardCheck],
   ["forecasts", "Forecasts", ChartNoAxesCombined],
@@ -334,6 +340,15 @@ function App() {
     planned = scoped("assignment")
       .filter((a) => a.status !== "Cancelled")
       .reduce((s, a) => s + a.hours, 0);
+  if (actor.role === "vendor")
+    return (
+      <VendorPortal
+        ws={ws}
+        api={api}
+        refresh={refresh}
+        signOut={() => void api("/api/logout", {}).then(() => setWs(null))}
+      />
+    );
   return (
     <div className="app">
       <aside className={menu ? "sidebar open" : "sidebar"}>
@@ -352,13 +367,23 @@ function App() {
             CAS FieldOps<small>THE FIELD, CONNECTED.</small>
           </span>
         </a>
-        <div className="workspace-label">
-          <span className="workspace-icon">C</span>
-          <div>
-            Your workspace<small>Construction operations</small>
-          </div>
-          <ChevronDown size={14} />
-        </div>
+        <WorkspaceSwitcher
+          ws={ws}
+          api={api}
+          onSwitch={() => {
+            setProject("");
+            setModal(null);
+            setDetail(null);
+            setView("overview");
+            void refresh();
+          }}
+        />
+        {["admin", "pm", "foreman", "worker"].includes(actor.role) &&
+          !ws.readOnly && (
+            <a className="button offline-link" href="#offline">
+              Offline field kit
+            </a>
+          )}
         <div className="nav-label">WORKSPACE</div>
         <nav>
           {nav
@@ -483,7 +508,7 @@ function App() {
               <ShieldCheck size={18} />
               Public demo · synthetic project records · read-only.{" "}
               <a
-                href="https://github.com/ExJtac/cas-fieldops"
+                href="https://github.com/ExJtac/Fieldops"
                 target="_blank"
                 rel="noreferrer"
               >
@@ -730,6 +755,9 @@ function App() {
               )}
             </>
           )}
+          {view === "schedule" && (
+            <ScheduleGantt ws={ws} project={project} open={open} />
+          )}
           {view === "materials" && (
             <>
               {title(
@@ -775,191 +803,16 @@ function App() {
                   )}
                 </div>
               </div>
-              <div className="material-filters">
-                {["section", "supplier", "po", "risk"].map((key) => (
-                  <label key={key}>
-                    {
-                      (
-                        {
-                          section: "Section",
-                          supplier: "Supplier",
-                          po: "PO",
-                          risk: "Risk",
-                        } as Row
-                      )[key]
-                    }
-                    <select
-                      value={materialFilters[key]}
-                      onChange={(e) =>
-                        setMaterialFilters((v) => ({
-                          ...v,
-                          [key]: e.target.value,
-                        }))
-                      }
-                    >
-                      <option value="">All</option>
-                      {(key === "section"
-                        ? [
-                            ...new Set(scoped("task").map((t) => t.section)),
-                          ].map((s) => ({ id: s, name: s }))
-                        : key === "risk"
-                          ? [
-                              "Ready",
-                              "Late delivery",
-                              "Awaiting delivery",
-                              "ETA unconfirmed",
-                            ].map((s) => ({ id: s, name: s }))
-                          : rows(key)
-                      ).map((r: Row) => (
-                        <option value={r.id} key={r.id}>
-                          {r.name || r.number}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                ))}
-                <label>
-                  Needed by
-                  <input
-                    type="date"
-                    value={materialFilters.needBy}
-                    onChange={(e) =>
-                      setMaterialFilters((v) => ({
-                        ...v,
-                        needBy: e.target.value,
-                      }))
-                    }
-                  />
-                </label>
-              </div>
-              <section className="panel">
-                {table(
-                  [
-                    "Part / description",
-                    "Task · section",
-                    "Required",
-                    "Covered",
-                    "Shortage",
-                    "Need by",
-                    "Project ordered / received",
-                    "Supplier / PO / ETA",
-                    ...(cost ? ["Unit prices"] : []),
-                    "Risk",
-                    "",
-                  ],
-                  filtered(
-                    readies.flatMap((r: Row) =>
-                      (r.lines || [])
-                        .map((l: Row) => ({
-                          ...l,
-                          taskName: r.name,
-                          section: r.section,
-                          orders: rows("po").filter(
-                            (p) =>
-                              p.projectId === l.projectId &&
-                              p.lines.some((x: Row) => x.partId === l.partId),
-                          ),
-                        }))
-                        .filter(
-                          (l: Row) =>
-                            (!materialFilters.section ||
-                              l.section === materialFilters.section) &&
-                            (!materialFilters.risk ||
-                              l.risk === materialFilters.risk) &&
-                            (!materialFilters.needBy ||
-                              (l.needBy &&
-                                l.needBy <= materialFilters.needBy)) &&
-                            (!materialFilters.supplier ||
-                              l.orders.some(
-                                (p: Row) =>
-                                  p.supplierId === materialFilters.supplier,
-                              )) &&
-                            (!materialFilters.po ||
-                              l.orders.some(
-                                (p: Row) => p.id === materialFilters.po,
-                              )),
-                        ),
-                    ),
-                  ),
-                  (r) => (
-                    <>
-                      <td>
-                        <strong>{r.partNumber}</strong>
-                        <small>{r.description}</small>
-                      </td>
-                      <td>
-                        {r.taskName}
-                        <small>{r.section}</small>
-                      </td>
-                      <td>
-                        {number(r.quantity)} {r.unit}
-                      </td>
-                      <td>{number(r.coverage)}</td>
-                      <td className={r.shortage ? "danger-text" : ""}>
-                        {number(r.shortage)}
-                      </td>
-                      <td>{r.needBy || "Unscheduled"}</td>
-                      <td>
-                        {number(
-                          r.orders
-                            .filter((p: Row) =>
-                              ["Issued", "Acknowledged"].includes(p.status),
-                            )
-                            .flatMap((p: Row) =>
-                              p.lines.filter((l: Row) => l.partId === r.partId),
-                            )
-                            .reduce((n: number, l: Row) => n + l.quantity, 0),
-                        )}{" "}
-                        /{" "}
-                        {number(
-                          rows("movement")
-                            .filter(
-                              (m) =>
-                                m.projectId === r.projectId &&
-                                m.partId === r.partId,
-                            )
-                            .reduce((n, m) => n + (m.received || 0), 0),
-                        )}
-                      </td>
-                      <td>
-                        {r.orders.map((p: Row) => (
-                          <small key={p.id}>
-                            {label("supplier", p.supplierId)} · {p.number} ·{" "}
-                            {p.lines
-                              .filter((l: Row) => l.partId === r.partId)
-                              .map((l: Row) => l.confirmedETA || "Unconfirmed")
-                              .join(", ")}
-                          </small>
-                        ))}
-                      </td>
-                      {cost && (
-                        <td>
-                          {r.orders.map((p: Row) => (
-                            <small key={p.id}>
-                              {p.lines
-                                .filter((l: Row) => l.partId === r.partId)
-                                .map((l: Row) => money(l.unitCost, p.currency))
-                                .join(", ")}
-                            </small>
-                          ))}
-                        </td>
-                      )}
-                      <td>
-                        <Badge>{r.risk}</Badge>
-                      </td>
-                      <td>
-                        <button
-                          className="text-button"
-                          onClick={() => setDetail(r)}
-                        >
-                          Source
-                        </button>
-                        {(purchase || manage) && edit("requirement", r)}
-                      </td>
-                    </>
-                  ),
-                )}
-              </section>
+              <MaterialWorkspace
+                ws={ws}
+                project={project}
+                api={api}
+                onEdit={
+                  purchase || manage
+                    ? (r) => open("requirement", {}, r)
+                    : undefined
+                }
+              />
               <div className="two-cols">
                 <section className="panel">
                   <div className="panel-head">
@@ -1197,58 +1050,12 @@ function App() {
                 )}
               </section>
               {cost && (
-                <section className="panel">
-                  <div className="panel-head">
-                    <div>
-                      <h2>Quote comparison</h2>
-                      <p>
-                        Compare only equivalent parts, currencies, quantities,
-                        and units.
-                      </p>
-                    </div>
-                  </div>
-                  {table(
-                    [
-                      "Part / supplier",
-                      "Quantity",
-                      "Landed total",
-                      "Lead time",
-                      "Arrival basis",
-                      "Valid through",
-                    ],
-                    scoped("quote").sort(
-                      (a, b) =>
-                        a.partId.localeCompare(b.partId) ||
-                        a.quantity - b.quantity,
-                    ),
-                    (r) => (
-                      <>
-                        <td>
-                          <strong>{label("part", r.partId)}</strong>
-                          <small>{label("supplier", r.supplierId)}</small>
-                        </td>
-                        <td>
-                          {number(r.quantity)} {r.unit}
-                        </td>
-                        <td>
-                          {money(
-                            r.unitCost * r.quantity + r.freight + r.tax,
-                            r.currency,
-                          )}
-                        </td>
-                        <td>
-                          {r.leadMin}–{r.leadMax} days ARO
-                        </td>
-                        <td>
-                          {r.ackDate
-                            ? `${addDays(r.ackDate, r.leadMin)} – ${addDays(r.ackDate, r.leadMax)} (forecast)`
-                            : "Unconfirmed · no acknowledgement date"}
-                        </td>
-                        <td>{r.validUntil || "Unspecified"}</td>
-                      </>
-                    ),
-                  )}
-                </section>
+                <QuoteComparison
+                  ws={ws}
+                  project={project}
+                  api={api}
+                  open={open}
+                />
               )}
               <section className="panel">
                 <div className="panel-head">
@@ -2325,7 +2132,7 @@ function App() {
               CAS FieldOps <b>·</b> Open source. On your terms.
             </span>
             <span>
-              v0.2.0 ·{" "}
+              v0.3.0 ·{" "}
               {actor.role === "admin" ? "Workspace administrator" : actor.role}
             </span>
           </footer>
@@ -2368,7 +2175,7 @@ function App() {
                 <ShieldCheck size={18} />
                 Public demo · synthetic project records · read-only.{" "}
                 <a
-                  href="https://github.com/ExJtac/cas-fieldops"
+                  href="https://github.com/ExJtac/Fieldops"
                   target="_blank"
                   rel="noreferrer"
                 >
@@ -2417,6 +2224,14 @@ function App() {
                     path = "/api/v1/crews/assignment";
                   else if (modal.kind === "password")
                     path = "/api/v1/me/password";
+                  else if (modal.kind.startsWith("tenant:"))
+                    path =
+                      "/api/v1/tenants" +
+                      (modal.kind === "tenant:create"
+                        ? ""
+                        : modal.kind === "tenant:member"
+                          ? "/members"
+                          : "/owner");
                   else if (modal.kind === "user") path = "/api/v1/users";
                   else if (modal.record) {
                     path += `/${modal.record.id}`;
@@ -2507,11 +2322,13 @@ function App() {
             )}
             {detail._kind &&
               actor.role !== "viewer" &&
-              (actor.role !== "worker" || detail._kind === "time") && (
+              (actor.role !== "worker" ||
+                ["time", "production"].includes(detail._kind)) && (
                 <Evidence
                   kind={detail._kind}
                   id={detail.id}
                   readOnly={ws.readOnly}
+                  canShare={cost}
                 />
               )}
           </section>
@@ -3058,6 +2875,7 @@ function RecordForm({
           }
           if (["po", "promise", "poAmendment"].includes(kind)) b.lines = lines;
           if (kind === "user" && !b.workerId) delete b.workerId;
+          if (kind === "user" && !b.supplierId) delete b.supplierId;
           if (kind === "movement" && b.action === "reverse") {
             b.quantity = modal.defaults?.quantity;
             b.partId = modal.defaults?.partId;
@@ -3576,16 +3394,28 @@ function ImportForm({
     </div>
   );
 }
-createRoot(document.getElementById("root")!).render(<App />);
+function Root() {
+  const [offline, setOffline] = useState(location.hash === "#offline");
+  useEffect(() => {
+    const changed = () => setOffline(location.hash === "#offline");
+    window.addEventListener("hashchange", changed);
+    return () => window.removeEventListener("hashchange", changed);
+  }, []);
+  return offline ? <OfflineKit /> : <App />;
+}
+createRoot(document.getElementById("root")!).render(<Root />);
 function Evidence({
   kind,
   id,
   readOnly,
+  canShare = false,
 }: {
   kind: string;
   id: string;
   readOnly: boolean;
+  canShare?: boolean;
 }) {
+  const [vendorVisible, setVendorVisible] = useState(false);
   const [files, setFiles] = useState<Row[]>([]),
     [error, setError] = useState(""),
     [busy, setBusy] = useState(false);
@@ -3610,6 +3440,16 @@ function Evidence({
         </a>
       ))}
       {!files.length && <p>No files attached.</p>}
+      {!readOnly && canShare && ["po", "quote", "shipment"].includes(kind) && (
+        <label className="check">
+          <input
+            type="checkbox"
+            checked={vendorVisible}
+            onChange={(e) => setVendorVisible(e.target.checked)}
+          />
+          Share this upload with the assigned supplier account
+        </label>
+      )}
       {!readOnly && (
         <label>
           Add PDF or receipt photo (5 MB maximum)
@@ -3636,6 +3476,7 @@ function Evidence({
                   name: file.name,
                   mime: file.type,
                   base64: btoa(binary),
+                  vendorVisible,
                 });
                 await load();
               } catch (e: any) {

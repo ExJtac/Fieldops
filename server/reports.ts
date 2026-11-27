@@ -1,3 +1,5 @@
+import { receiptValuation } from "./valuation.js";
+import { workforceData } from "./workforce.js";
 import { Operations, canCost, addDays } from "./domain.js";
 import { type Actor, type RecordData as R, requireThat } from "./store.js";
 import { payrollAccess } from "./access.js";
@@ -109,33 +111,35 @@ export function reportData(o: Operations, a: Actor, q: any) {
         ["Issued", "Acknowledged"].includes(p.status),
     )
     .flatMap((p) =>
-      p.lines.map((l: any) => {
-        const part = o.ref(a, "part", l.partId),
-          ms = movements.filter((m) => m.poId === p.id && m.lineId === l.id),
-          received = o.receiptTotal(a, p.id, l.id);
-        return {
-          project: name("project", p.projectId),
-          po: p.number,
-          supplier: name("supplier", p.supplierId),
-          part: part.partNumber,
-          category: part.csi || part.trade || "Unclassified",
-          unit: part.unit,
-          ordered: l.quantity,
-          netReceived: received,
-          receivedInPeriod: ms.reduce((s, m) => s + m.received, 0),
-          remaining: l.quantity - received,
-          backordered: l.backordered || 0,
-          confirmedETA: l.confirmedETA || "",
-          status:
-            l.quantity === received
-              ? "Received"
-              : l.backordered
-                ? "Backordered"
-                : received
-                  ? "Partially received"
-                  : "Ordered",
-        };
-      }),
+      p.lines
+        .filter((l: any) => !section || taskIds.has(l.taskId))
+        .map((l: any) => {
+          const part = o.ref(a, "part", l.partId),
+            ms = movements.filter((m) => m.poId === p.id && m.lineId === l.id),
+            received = o.receiptTotal(a, p.id, l.id);
+          return {
+            project: name("project", p.projectId),
+            po: p.number,
+            supplier: name("supplier", p.supplierId),
+            part: part.partNumber,
+            category: part.csi || part.trade || "Unclassified",
+            unit: part.unit,
+            ordered: l.quantity,
+            netReceived: received,
+            receivedInPeriod: ms.reduce((s, m) => s + m.received, 0),
+            remaining: l.quantity - received,
+            backordered: l.backordered || 0,
+            confirmedETA: l.confirmedETA || "",
+            status:
+              l.quantity === received
+                ? "Received"
+                : l.backordered
+                  ? "Backordered"
+                  : received
+                    ? "Partially received"
+                    : "Ordered",
+          };
+        }),
     )
     .filter((r) => (!from && !to) || !r.confirmedETA || inDate(r.confirmedETA));
   tables.Workforce = o.all(a, "worker").map((w) => {
@@ -301,6 +305,8 @@ export function reportData(o: Operations, a: Actor, q: any) {
       };
     }),
   );
+  if (from && to && to <= addDays(from, 366))
+    Object.assign(tables, workforceData(o, a, { project, from, to, section }));
   tables.Schedule = o
     .all(a, "task")
     .filter((t) => taskIds.has(t.id))
@@ -323,21 +329,28 @@ export function reportData(o: Operations, a: Actor, q: any) {
           ["Issued", "Acknowledged"].includes(p.status),
       )
       .flatMap((p) =>
-        p.lines.map((l: any) => {
-          const part = o.ref(a, "part", l.partId),
-            received = o.receiptTotal(a, p.id, l.id);
-          return {
-            project: name("project", p.projectId),
-            supplier: name("supplier", p.supplierId),
-            po: p.number,
-            category: part.csi || part.trade || "Unclassified",
-            part: part.partNumber,
-            currency: p.currency,
-            committedMaterial: l.quantity * l.unitCost,
-            receivedMaterialValue: received * l.unitCost,
-            openMaterialCommitment: (l.quantity - received) * l.unitCost,
-          };
-        }),
+        p.lines
+          .filter((l: any) => !section || taskIds.has(l.taskId))
+          .map((l: any) => {
+            const part = o.ref(a, "part", l.partId),
+              received = o.receiptTotal(a, p.id, l.id);
+            return {
+              project: name("project", p.projectId),
+              supplier: name("supplier", p.supplierId),
+              po: p.number,
+              category: part.csi || part.trade || "Unclassified",
+              part: part.partNumber,
+              currency: p.currency,
+              committedMaterial: l.quantity * l.unitCost,
+              receivedMaterialValue: receiptValuation(o, a, p, l.id).value,
+              receivedValueInPeriod: [
+                ...receiptValuation(o, a, p, l.id).entries,
+              ]
+                .filter(([id]) => movements.some((m) => m.id === id))
+                .reduce((n, [, v]) => n + v, 0),
+              openMaterialCommitment: (l.quantity - received) * l.unitCost,
+            };
+          }),
       );
     const grouped = new Map<string, any>();
     for (const line of tables.Spend) {
@@ -354,11 +367,13 @@ export function reportData(o: Operations, a: Actor, q: any) {
         currency: line.currency,
         committedMaterial: 0,
         receivedMaterialValue: 0,
+        receivedValueInPeriod: 0,
         openMaterialCommitment: 0,
       };
       for (const key of [
         "committedMaterial",
         "receivedMaterialValue",
+        "receivedValueInPeriod",
         "openMaterialCommitment",
       ])
         row[key] += line[key];
@@ -367,7 +382,7 @@ export function reportData(o: Operations, a: Actor, q: any) {
     tables.SpendTotals = [...grouped.values()];
     tables.OrderCosts = o
       .all(a, "po")
-      .filter((p) => !project || p.projectId === project)
+      .filter((p) => (!project || p.projectId === project) && !section)
       .map((p) => ({
         po: p.number,
         status: p.status,
@@ -432,7 +447,7 @@ export function reportData(o: Operations, a: Actor, q: any) {
     filters: { project, section, from, to },
     notes: [
       "Inventory and forecasts are cumulative; period columns use the selected dates.",
-      "Section-specific tables use task allocations. Orders/deliveries and spend are project-wide because PO lines are not assigned to sections.",
+      "Section filters use explicit task allocations, including optional taskId on PO lines; unallocated order lines are excluded from section reports. Freight/tax stay in project-only OrderCosts because no section allocation is assumed. Receipt value uses the PO revision at receipt and weighted-average returns. Committed/open totals are current; receivedValueInPeriod follows the date filter.",
       "Received material value is a receipt-based valuation, not a supplier invoice or payment.",
       "No taxes, deductions or automatic payroll transmission.",
     ],

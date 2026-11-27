@@ -145,6 +145,12 @@ export const forms: Record<string, { title: string; fields: Field[] }> = {
         help: "Leave blank when unconfirmed. No forecast arrival is inferred.",
       }),
       f("validUntil", "Quote valid through", "date"),
+      f("rfqId", "Request for quote", "select", { ref: "rfq" }),
+      f("equivalenceId", "Approved alternate equivalence", "select", {
+        ref: "substitution",
+      }),
+      f("requestDate", "Quote requested on", "date"),
+      f("responseDate", "Supplier responded on", "date"),
       f("source", "Quote source"),
       note,
     ],
@@ -220,6 +226,9 @@ export const forms: Record<string, { title: string; fields: Field[] }> = {
   production: {
     title: "Daily production",
     fields: [
+      f("workerId", "Worker attribution (optional for crew totals)", "select", {
+        ref: "worker",
+      }),
       project,
       task,
       f("date", "Date", "date", { required: true }),
@@ -280,7 +289,16 @@ export const forms: Record<string, { title: string; fields: Field[] }> = {
         required: true,
       }),
       f("role", "Role", "select", {
-        options: ["pm", "purchasing", "foreman", "worker", "viewer", "admin"],
+        options: [
+          "pm",
+          "purchasing",
+          "foreman",
+          "worker",
+          "viewer",
+          "finance",
+          "vendor",
+          "admin",
+        ],
         default: "viewer",
       }),
       { ...worker, required: false, help: "Required for worker accounts." },
@@ -646,3 +664,161 @@ Object.assign(forms, {
     ],
   },
 });
+
+Object.assign(forms, {
+  availability: {
+    title: "Request availability change",
+    fields: [
+      project,
+      worker,
+      day("date", "Date"),
+      num("hours", "Unavailable hours"),
+      reason,
+    ],
+  },
+  "op:fieldEntry": {
+    title: "Time and installed quantity",
+    fields: [
+      project,
+      task,
+      worker,
+      day("date", "Work date"),
+      num("start", "Start hour", 7),
+      num("regular", "Regular hours", 8),
+      num("overtime", "Overtime hours", 0),
+      ref("costCodeId", "Job cost code", "costCode", false),
+      num("quantity", "Installed quantity (0 for time only)", 0),
+      unit,
+      note,
+    ],
+  },
+});
+forms.project.fields.push(
+  f(
+    "availabilityRequests",
+    "Allow workers to request availability changes",
+    "checkbox",
+    { default: true },
+  ),
+);
+forms.assignment.fields.push(
+  f("plannedQuantity", "Planned production quantity", "optionalNumber"),
+);
+
+forms.calendar.fields.push(
+  num("paidBreak", "Paid break hours (included in capacity)", 0),
+);
+Object.assign(forms, {
+  crew: {
+    title: "Crew and shift calendar",
+    fields: [
+      f("name", "Crew name", "text", { required: true }),
+      f("trade", "Trade", "text", { required: true }),
+      ...forms.calendar.fields.filter((x) => x.key !== "workerId"),
+      note,
+    ],
+  },
+  crewMembership: {
+    title: "Mobilize a crew member",
+    fields: [
+      ref("crewId", "Crew", "crew"),
+      worker,
+      day("from", "Mobilization date"),
+      f("to", "Demobilization date (optional)", "date"),
+      f("role", "Crew role", "text", { required: true }),
+      note,
+    ],
+  },
+  "op:demobilize": {
+    title: "Demobilize crew member",
+    fields: [day("to", "Last day in crew")],
+  },
+});
+forms.assignment.fields.push(
+  ref("crewId", "Dated crew membership", "crew", false),
+);
+forms["plan:range"].fields.push(
+  ref("crewId", "Dated crew membership", "crew", false),
+);
+
+forms["op:grants"].fields.push(
+  f(
+    "commercial",
+    "Explicit customer sell-price and markup permission",
+    "checkbox",
+  ),
+);
+forms["op:rate"].fields.push(reason);
+forms["op:price"] = {
+  title: "Private customer pricing",
+  fields: [
+    project,
+    ref("taskId", "Task (optional)", "task", false),
+    f("description", "Customer line description", "text", { required: true }),
+    num("quantity", "Quantity", 1),
+    unit,
+    f("currency", "Currency", "select", {
+      options: ["USD", "CAD", "EUR", "GBP"],
+      default: "USD",
+    }),
+    f("method", "Pricing method", "select", {
+      options: ["price", "markup"],
+      default: "price",
+    }),
+    num("unitSell", "Explicit unit sell price", 0),
+    num("costBasis", "Private unit cost basis", 0),
+    num("markupPercent", "Markup percent", 0),
+    reason,
+  ],
+};
+
+forms.user.fields.push({
+  ...supplier,
+  required: false,
+  help: "Required for approved vendor accounts. Grant project access separately.",
+});
+
+Object.assign(forms, {
+  "tenant:create": {
+    title: "Create a separate workspace",
+    fields: [f("name", "Workspace name", "text", { required: true })],
+  },
+  "tenant:member": {
+    title: "Add an existing installation account",
+    fields: forms.user.fields.filter(
+      (x) => !["name", "password"].includes(x.key),
+    ),
+  },
+  "tenant:owner": {
+    title: "Transfer workspace ownership",
+    fields: [
+      f("email", "Email of an existing workspace administrator", "email", {
+        required: true,
+      }),
+    ],
+  },
+});
+
+forms["op:adapter"] = {
+  title: "Configure an outbound event adapter",
+  fields: [
+    f("name", "Adapter name", "text", { required: true }),
+    f("endpoint", "HTTPS endpoint", "url", { required: true }),
+    f("secretEnv", "Signing secret environment variable", "text", {
+      required: true,
+      help: "Use FIELDOPS_WEBHOOK_ followed by uppercase letters, numbers or underscores. The secret itself stays on the server.",
+    }),
+    f("enabled", "Enable delivery to this endpoint", "checkbox"),
+    f("eventTypes", "Event types (comma separated)", "list", {
+      default: [
+        "MaterialReceiptRecorded",
+        "TaskMaterialsBecameReady",
+        "CrewAssignmentChanged",
+        "TimeEntryApproved",
+        "ProjectQuantityInstalled",
+        "SupplierPromiseChanged",
+        "ProjectProgressChanged",
+      ],
+    }),
+  ],
+};

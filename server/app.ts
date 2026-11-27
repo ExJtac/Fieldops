@@ -1,4 +1,19 @@
 import express from "express";
+import {
+  receiveBilling,
+  billingView,
+  checkout,
+  billingPortal,
+} from "./billing.js";
+import {
+  tenantList,
+  createTenant,
+  addMember,
+  entitlements,
+  guardEntitlement,
+  owns,
+} from "./tenants.js";
+import { vendorRouteAllowed } from "./vendor.js";
 import { advancedRoutes } from "./advanced-routes.js";
 import { Advanced } from "./advanced.js";
 import helmet from "helmet";
@@ -40,6 +55,18 @@ export function createApp(store: Store) {
           : false,
     }),
   );
+  app.post(
+    "/api/billing/webhook",
+    express.raw({ type: "application/json", limit: "1mb" }),
+    async (q, r) =>
+      r.json(
+        await receiveBilling(
+          store,
+          q.body,
+          String(q.get("Stripe-Signature") || ""),
+        ),
+      ),
+  );
   app.use(express.json({ limit: "16mb" }));
   app.use("/api", (_q, r, next) => {
     r.set("Cache-Control", "no-store");
@@ -57,7 +84,7 @@ export function createApp(store: Store) {
     }
     next();
   });
-  app.get("/api/health", (_q, r) => r.json({ ok: true, version: "0.2.0" }));
+  app.get("/api/health", (_q, r) => r.json({ ok: true, version: "0.3.0" }));
   app.use("/api", (q, _r, next) => {
     if (readOnly && !["GET", "HEAD"].includes(q.method))
       return next(
@@ -82,7 +109,7 @@ export function createApp(store: Store) {
   function signIn(res: express.Response, a: Actor) {
     const token = randomBytes(32).toString("hex");
     store.db
-      .prepare("INSERT INTO sessions VALUES(?,?,?)")
+      .prepare("INSERT INTO sessions(token,user_id,expires) VALUES(?,?,?)")
       .run(hash(token), a.id, Date.now() + 12 * 3600000);
     res.cookie("fieldops_session", token, {
       httpOnly: true,
@@ -173,6 +200,56 @@ export function createApp(store: Store) {
     res.clearCookie("fieldops_session", { path: cookiePath });
     res.json({ ok: true });
   });
+  app.use("/api/v1", (q, r, next) => {
+    if (
+      r.locals.actor.role === "vendor" &&
+      !vendorRouteAllowed(q.method, q.path)
+    )
+      return next(new Fault("Supplier portal action is not permitted", 403));
+    next();
+  });
+  app.use("/api/v1", (q, r, next) => {
+    if (!["POST", "PATCH", "DELETE"].includes(q.method)) return next();
+    const path = q.path;
+    if (
+      /^\/(records|inventory|assignments|crews|imports|intake|planning|purchase-orders)\//.test(
+        path,
+      ) ||
+      path.startsWith("/operations/")
+    ) {
+      const action = path.split("/").at(-1) || "",
+        exempt = ["grants", "dispatch", "retryEvent"];
+      if (!exempt.includes(action)) {
+        const map: Record<string, string> = {
+          assetMove: "movement",
+          quoteToPo: "po",
+          vendorPromise: "po",
+          shortageRfqs: "rfq",
+          cancelTimer: "time",
+          workerReview: "time",
+          rate: "time",
+          demobilize: "crewMembership",
+        };
+        const kind = path.startsWith("/records/")
+          ? path.split("/")[2]
+          : path.startsWith("/intake/po/") ||
+              path.startsWith("/purchase-orders/")
+            ? "po"
+            : path.startsWith("/intake/estimate/")
+              ? "requirement"
+              : path.startsWith("/planning/") ||
+                  path.startsWith("/assignments/")
+                ? "assignment"
+                : map[action] || action;
+        guardEntitlement(
+          store,
+          r.locals.actor,
+          kind === "project" ? "project-edit" : kind,
+        );
+      }
+    }
+    next();
+  });
   const write = (req: express.Request, res: express.Response, fn: () => any) =>
     res.json(
       ops.write(
@@ -182,8 +259,79 @@ export function createApp(store: Store) {
         fn,
       ),
     );
+  app.get("/api/v1/billing", (_q, r) =>
+    r.json(billingView(store, r.locals.actor)),
+  );
+  app.post("/api/v1/billing/checkout", authLimiter, async (q, r) =>
+    r.json(
+      await checkout(
+        store,
+        r.locals.actor,
+        z.string().parse(q.body.plan),
+        String(q.get("Idempotency-Key") || ""),
+      ),
+    ),
+  );
+  app.post("/api/v1/billing/portal", authLimiter, async (q, r) =>
+    r.json(
+      await billingPortal(
+        store,
+        r.locals.actor,
+        String(q.get("Idempotency-Key") || ""),
+      ),
+    ),
+  );
+  app.get("/api/v1/tenants", (_q, r) =>
+    r.json({
+      workspaces: tenantList(store, r.locals.actor),
+      entitlements: entitlements(store, r.locals.actor),
+    }),
+  );
+  app.post("/api/v1/tenants", (q, r) =>
+    write(q, r, () => createTenant(store, r.locals.actor, q.body.name)),
+  );
+  app.post("/api/v1/tenants/members", (q, r) =>
+    write(q, r, () => {
+      guardEntitlement(store, r.locals.actor, "member");
+      return addMember(ops, r.locals.actor, q.body);
+    }),
+  );
+  app.post("/api/v1/tenants/owner", (q, r) =>
+    write(q, r, () => {
+      const a = r.locals.actor;
+      requireThat(owns(store, a), "Workspace owner required", 403);
+      const target = store.db
+        .prepare(
+          "SELECT u.id FROM memberships m JOIN users u ON u.id=m.user_id WHERE m.org=? AND m.active=1 AND m.role='admin' AND u.active=1 AND u.email=?",
+        )
+        .get(a.org, z.email().parse(q.body.email).toLowerCase()) as any;
+      requireThat(target, "Choose an active administrator in this workspace");
+      store.db
+        .prepare("UPDATE org_owners SET user_id=? WHERE org=?")
+        .run(target.id, a.org);
+      store.audit(a, "ownership.transferred", target.id);
+      return { ok: true };
+    }),
+  );
+  app.post("/api/v1/tenants/switch", (q, r) => {
+    const actor = store.user(r.locals.actor.id, z.string().parse(q.body.org));
+    const token = q.headers.cookie
+      ?.split(";")
+      .map((x) => x.trim())
+      .find((x) => x.startsWith("fieldops_session="))
+      ?.slice(17);
+    requireThat(token, "Sign in required", 401);
+    store.db
+      .prepare("UPDATE sessions SET org_id=? WHERE token=?")
+      .run(actor.org, hash(token));
+    r.json({ actor });
+  });
   app.get("/api/v1/workspace", (_q, r) =>
-    r.json({ ...ops.snapshot(r.locals.actor), readOnly }),
+    r.json({
+      ...ops.snapshot(r.locals.actor),
+      readOnly,
+      entitlements: entitlements(store, r.locals.actor),
+    }),
   );
   app.post("/api/v1/records/:kind", (q, r) => {
     requireThat(q.params.kind in schemas, "Unknown record type", 404);
@@ -304,10 +452,11 @@ export function createApp(store: Store) {
     );
     if (a.role === "worker")
       requireThat(
-        kind === "time" && r.workerId === a.workerId,
-        "Only your own time evidence is available",
+        ["time", "production"].includes(kind) && r.workerId === a.workerId,
+        "Only your own time or production evidence is available",
         403,
       );
+    if (a.role === "vendor") return r;
     if (["quote", "po", "supplier", "rfq"].includes(kind))
       requireThat(
         ["admin", "purchasing"].includes(a.role),
@@ -323,7 +472,8 @@ export function createApp(store: Store) {
     r.json(
       store.db
         .prepare(
-          "SELECT id,name,mime,created_at FROM attachments WHERE org=? AND kind=? AND entity=?",
+          "SELECT id,name,mime,created_at,vendor_visible FROM attachments WHERE org=? AND kind=? AND entity=?" +
+            (r.locals.actor.role === "vendor" ? " AND vendor_visible=1" : ""),
         )
         .all(r.locals.actor.org, kind, id),
     );
@@ -337,6 +487,7 @@ export function createApp(store: Store) {
               "movement",
               "po",
               "quote",
+              "shipment",
               "time",
               "production",
               "hold",
@@ -346,14 +497,28 @@ export function createApp(store: Store) {
             name: z.string().min(1).max(200),
             mime: z.enum(["image/jpeg", "image/png", "application/pdf"]),
             base64: z.string().max(8_000_000),
+            vendorVisible: z.boolean().default(false),
           })
           .parse(q.body);
       attachmentAccess(a, b.kind, b.entity);
+      if (a.role === "vendor")
+        requireThat(
+          ["quote", "shipment"].includes(b.kind),
+          "Suppliers may upload quote or shipment evidence",
+          403,
+        );
+      if (b.vendorVisible)
+        requireThat(
+          ["admin", "purchasing", "vendor"].includes(a.role),
+          "Purchasing permission required to share supplier evidence",
+          403,
+        );
       const bytes = Buffer.from(b.base64, "base64");
       requireThat(
         bytes.length > 0 && bytes.length <= 5_000_000,
         "Files must be at most 5 MB",
       );
+      guardEntitlement(store, a, "attachment", bytes.length);
       const valid =
         b.mime === "application/pdf"
           ? bytes.subarray(0, 5).toString() === "%PDF-"
@@ -363,7 +528,9 @@ export function createApp(store: Store) {
       requireThat(valid, "File content does not match its type");
       const id = randomUUID();
       store.db
-        .prepare("INSERT INTO attachments VALUES(?,?,?,?,?,?,?,?,?)")
+        .prepare(
+          "INSERT INTO attachments(id,org,kind,entity,name,mime,bytes,created_at,author,vendor_visible) VALUES(?,?,?,?,?,?,?,?,?,?)",
+        )
         .run(
           id,
           a.org,
@@ -374,6 +541,7 @@ export function createApp(store: Store) {
           bytes,
           new Date().toISOString(),
           a.id,
+          a.role === "vendor" || b.vendorVisible ? 1 : 0,
         );
       store.audit(a, "attachment.added", b.entity, { id, name: b.name });
       return { id };
@@ -386,6 +554,11 @@ export function createApp(store: Store) {
         .get(a.org, q.params.id) as any;
     requireThat(row, "Attachment not found", 404);
     attachmentAccess(a, row.kind, row.entity);
+    requireThat(
+      a.role !== "vendor" || row.vendor_visible === 1,
+      "File is not shared with suppliers",
+      403,
+    );
     r.type(row.mime).attachment(row.name).send(Buffer.from(row.bytes));
   });
   app.post("/api/v1/imports/preview", async (q, r) => {
@@ -409,7 +582,7 @@ export function createApp(store: Store) {
     r.json(
       store.db
         .prepare(
-          "SELECT id,name,email,role,worker_id AS workerId,active FROM users WHERE org=?",
+          "SELECT u.id,u.name,u.email,m.role,m.worker_id AS workerId,m.supplier_id AS supplierId,m.active FROM memberships m JOIN users u ON u.id=m.user_id WHERE m.org=?",
         )
         .all(r.locals.actor.org),
     );
@@ -428,13 +601,20 @@ export function createApp(store: Store) {
           password: z.string().min(12).max(256),
           role: z.enum(roles),
           workerId: z.string().optional(),
+          supplierId: z.string().optional(),
         })
         .parse(q.body);
+      if (b.supplierId) ops.ref(r.locals.actor, "supplier", b.supplierId);
+      requireThat(
+        b.role !== "vendor" || b.supplierId,
+        "Supplier accounts require a supplier record",
+      );
       if (b.workerId) ops.ref(r.locals.actor, "worker", b.workerId);
       requireThat(
         b.role !== "worker" || b.workerId,
         "Worker accounts require a worker record",
       );
+      guardEntitlement(store, r.locals.actor, "member");
       const u = store.createUser(
         r.locals.actor.org,
         b.email,
@@ -442,6 +622,7 @@ export function createApp(store: Store) {
         b.password,
         b.role,
         b.workerId,
+        b.supplierId,
       );
       store.audit(r.locals.actor, "user.created", u.id, { role: b.role });
       return u;
@@ -480,18 +661,26 @@ export function createApp(store: Store) {
         q.params.id !== a.id,
         "You cannot deactivate your own account",
       );
+      requireThat(
+        !store.db
+          .prepare("SELECT 1 FROM org_owners WHERE org=? AND user_id=?")
+          .get(a.org, q.params.id),
+        "Transfer workspace ownership before deactivating its owner",
+      );
       const target = store.db
-        .prepare("SELECT id FROM users WHERE id=? AND org=?")
+        .prepare("SELECT user_id FROM memberships WHERE user_id=? AND org=?")
         .get(q.params.id, a.org);
       requireThat(target, "Account not found", 404);
       const active = z.boolean().parse(q.body.active);
       store.db
-        .prepare("UPDATE users SET active=? WHERE id=?")
-        .run(active ? 1 : 0, q.params.id);
+        .prepare("UPDATE memberships SET active=? WHERE user_id=? AND org=?")
+        .run(active ? 1 : 0, q.params.id, a.org);
       if (!active)
         store.db
-          .prepare("DELETE FROM sessions WHERE user_id=?")
-          .run(q.params.id);
+          .prepare(
+            "DELETE FROM sessions WHERE user_id=? AND (org_id=? OR org_id IS NULL)",
+          )
+          .run(q.params.id, a.org);
       store.audit(
         a,
         active ? "user.activated" : "user.deactivated",
